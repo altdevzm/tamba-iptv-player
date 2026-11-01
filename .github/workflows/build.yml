@@ -179,7 +179,7 @@ jobs:
             clang cmake ninja-build pkg-config \
             libgtk-3-dev libblkid-dev liblzma-dev \
             libsecret-1-dev libmpv-dev mpv \
-            ruby ruby-dev build-essential rpm zstd
+            ruby ruby-dev build-essential rpm zstd libarchive-tools
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
