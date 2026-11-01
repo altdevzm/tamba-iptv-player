@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.filimuplus.filimu_plus"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -28,6 +28,19 @@
 
 ---
 
+## Automated Builds
+
+GitHub Actions runs analysis and tests, then builds platform downloads for each push to `main`. Version tags beginning with `v` also publish the build files to a GitHub Release:
+
+- **Android:** one adaptive APK for Android phones and Android TV, plus an Android App Bundle.
+- **Windows:** a per-user setup installer (`.exe`).
+- **macOS:** a disk image (`.dmg`).
+- **Linux:** Debian (`.deb`), Fedora-compatible RPM (`.rpm`), Arch (`.pkg.tar.zst`), and a portable x64 `.tar.gz`.
+
+The Linux packages depend on the target distribution's GTK 3, mpv, and libsecret runtime libraries. The portable archive is for other x64 Linux distributions with those libraries installed.
+
+Windows and macOS downloads are not code-signed or notarized yet; SmartScreen or Gatekeeper may show a first-run warning.
+
 ## Development Prerequisites
 
 ### Linux Host Dependencies
