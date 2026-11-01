@@ -1,0 +1,11 @@
+name: volume_controller
+description: "A Flutter package to control volume without native dependencies"
+version: 3.7.1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
