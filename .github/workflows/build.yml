@@ -73,6 +73,8 @@ jobs:
           APK=build/app/outputs/flutter-apk/app-release.apk
           unzip -t "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions "$APK" |
+            grep -q 'android.permission.INTERNET'
 
       - name: Build Android App Bundle
         run: flutter build appbundle --release --no-pub
