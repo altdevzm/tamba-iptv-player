@@ -68,6 +68,12 @@ jobs:
       - name: Build APK
         run: flutter build apk --release --no-pub
 
+      - name: Verify Android APK
+        run: |
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          unzip -t "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+
       - name: Build Android App Bundle
         run: flutter build appbundle --release --no-pub
 
