@@ -39,6 +39,8 @@ GitHub Actions runs analysis and tests, then builds platform downloads for each 
 
 The Linux packages depend on the target distribution's GTK 3, mpv, and libsecret runtime libraries. The portable archive is for other x64 Linux distributions with those libraries installed.
 
+Android allows HTTP playlist and provider URLs for compatibility. HTTP does not encrypt credentials or media traffic in transit; use HTTPS when your provider supports it, and avoid entering credentials over untrusted networks.
+
 Windows and macOS downloads are not code-signed or notarized yet; SmartScreen or Gatekeeper may show a first-run warning.
 
 ## Development Prerequisites

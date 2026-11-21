@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
@@ -9,7 +11,9 @@ import '../../../shared/models/media_item.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../core/security/secure_storage_service.dart';
+import '../../stalker/data/stalker_client.dart';
 import '../domain/playback_enums.dart';
+import 'libvlc_bridge.dart';
 
 // ─── Rich Player State ────────────────────────────────────────────────────────
 
@@ -33,9 +37,14 @@ class PlayerState {
   final int droppedFrames;
   final PlaybackProfile playbackProfile;
   final LiveStreamFormat liveStreamFormat;
+  final PlaybackEngine playbackEngine;
   final double playbackRate;
   final MediaItem? nextEpisodeItem;
   final bool autoPlayEnabled;
+  final List<LibVlcTrack> vlcAudioTracks;
+  final List<LibVlcTrack> vlcSubtitleTracks;
+  final int activeVlcAudioTrack;
+  final int activeVlcSubtitleTrack;
 
   const PlayerState({
     this.currentItem,
@@ -57,9 +66,14 @@ class PlayerState {
     this.droppedFrames = 0,
     this.playbackProfile = PlaybackProfile.auto,
     this.liveStreamFormat = LiveStreamFormat.providerDefault,
+    this.playbackEngine = PlaybackEngine.mediaKit,
     this.playbackRate = 1.0,
     this.nextEpisodeItem,
     this.autoPlayEnabled = true,
+    this.vlcAudioTracks = const [],
+    this.vlcSubtitleTracks = const [],
+    this.activeVlcAudioTrack = -1,
+    this.activeVlcSubtitleTrack = -1,
   });
 
   PlayerState copyWith({
@@ -83,10 +97,15 @@ class PlayerState {
     int? droppedFrames,
     PlaybackProfile? playbackProfile,
     LiveStreamFormat? liveStreamFormat,
+    PlaybackEngine? playbackEngine,
     double? playbackRate,
     MediaItem? nextEpisodeItem,
     bool clearNextEpisode = false,
     bool? autoPlayEnabled,
+    List<LibVlcTrack>? vlcAudioTracks,
+    List<LibVlcTrack>? vlcSubtitleTracks,
+    int? activeVlcAudioTrack,
+    int? activeVlcSubtitleTrack,
   }) {
     return PlayerState(
       currentItem: currentItem ?? this.currentItem,
@@ -109,10 +128,16 @@ class PlayerState {
       droppedFrames: droppedFrames ?? this.droppedFrames,
       playbackProfile: playbackProfile ?? this.playbackProfile,
       liveStreamFormat: liveStreamFormat ?? this.liveStreamFormat,
+      playbackEngine: playbackEngine ?? this.playbackEngine,
       playbackRate: playbackRate ?? this.playbackRate,
       nextEpisodeItem:
           clearNextEpisode ? null : (nextEpisodeItem ?? this.nextEpisodeItem),
       autoPlayEnabled: autoPlayEnabled ?? this.autoPlayEnabled,
+      vlcAudioTracks: vlcAudioTracks ?? this.vlcAudioTracks,
+      vlcSubtitleTracks: vlcSubtitleTracks ?? this.vlcSubtitleTracks,
+      activeVlcAudioTrack: activeVlcAudioTrack ?? this.activeVlcAudioTrack,
+      activeVlcSubtitleTrack:
+          activeVlcSubtitleTrack ?? this.activeVlcSubtitleTrack,
     );
   }
 }
@@ -123,9 +148,15 @@ class PlayerController extends StateNotifier<PlayerState>
     with WidgetsBindingObserver {
   final Player player;
   late final VideoController videoController;
+  final LibVlcBridge libVlcBridge = LibVlcBridge();
   final List<StreamSubscription> _subscriptions = [];
   final AppDatabase _db;
   final SecureStorageService _storage;
+  final StalkerClient? _stalkerClient;
+  final Map<String, StalkerCredentials> _stalkerCredsCache = {};
+
+  bool get _usingLibVlc =>
+      state.playbackEngine == PlaybackEngine.libVlc && LibVlcBridge.isSupported;
 
   Timer? _positionSaveTimer;
   Timer? _reconnectTimer;
@@ -139,15 +170,22 @@ class PlayerController extends StateNotifier<PlayerState>
 
   // Prevent race conditions when switching streams rapidly
   String? _currentOpenUrl;
+  MediaItem? _previousLiveChannel;
 
-  PlayerController(this._db, this._storage)
-      : player = Player(
+  PlayerController(this._db, this._storage, {Dio? dio})
+      : _stalkerClient = dio != null ? StalkerClient(dio) : null,
+        player = Player(
           configuration: const PlayerConfiguration(
             bufferSize: 64 * 1024 * 1024, // 64 MB default
           ),
         ),
         super(const PlayerState()) {
-    videoController = VideoController(player);
+    videoController = VideoController(
+      player,
+      configuration: const VideoControllerConfiguration(
+        androidAttachSurfaceAfterVideoParameters: false,
+      ),
+    );
     WidgetsBinding.instance.addObserver(this);
     _initListeners();
     _startPositionSaveTimer();
@@ -163,6 +201,7 @@ class PlayerController extends StateNotifier<PlayerState>
         _storage.getPlaylistCredentials('filimu_autoplay_next'),
         _storage.getPlaylistCredentials('filimu_live_stream_format'),
         _storage.getPlaylistCredentials('filimu_playback_profile'),
+        _storage.getPlaylistCredentials('filimu_playback_engine'),
       ]);
       final formatValue = values[1];
       final format = LiveStreamFormat.values.firstWhere(
@@ -173,17 +212,31 @@ class PlayerController extends StateNotifier<PlayerState>
         (value) => value.name == values[2],
         orElse: () => PlaybackProfile.auto,
       );
+      final savedEngine = PlaybackEngine.values.firstWhere(
+        (value) => value.name == values[3],
+        orElse: () => PlaybackEngine.mediaKit,
+      );
+      final effectiveEngine =
+          (savedEngine == PlaybackEngine.libVlc && LibVlcBridge.isSupported)
+              ? PlaybackEngine.libVlc
+              : PlaybackEngine.mediaKit;
       state = state.copyWith(
         autoPlayEnabled:
             values[0] == null ? state.autoPlayEnabled : values[0] != 'false',
         liveStreamFormat: format,
         playbackProfile: profile,
+        playbackEngine: effectiveEngine,
       );
     } catch (_) {}
   }
 
   void _initListeners() {
+    if (LibVlcBridge.isSupported) {
+      _subscriptions.add(libVlcBridge.events.listen(_handleLibVlcEvent));
+    }
+
     _subscriptions.add(player.stream.playing.listen((playing) {
+      if (_usingLibVlc) return;
       if (!playing && state.isPlaying) {
         unawaited(_saveCurrentPosition());
       }
@@ -271,6 +324,98 @@ class PlayerController extends StateNotifier<PlayerState>
     }));
   }
 
+  void _handleLibVlcEvent(Map<String, dynamic> event) {
+    if (!_usingLibVlc) return;
+    final type = event['type']?.toString();
+    switch (type) {
+      case 'playing':
+        final playing = event['playing'] == true;
+        if (!playing && state.isPlaying) {
+          unawaited(_saveCurrentPosition());
+        }
+        if (state.currentItem == null) {
+          state = state.copyWith(isPlaying: false);
+          return;
+        }
+        state = state.copyWith(
+          isPlaying: playing,
+          playbackState: playing ? PlaybackState.playing : PlaybackState.paused,
+        );
+        break;
+      case 'buffering':
+        final buffering = event['buffering'] == true;
+        state = state.copyWith(
+          isBuffering: buffering,
+          playbackState: buffering
+              ? PlaybackState.buffering
+              : (state.isPlaying ? PlaybackState.playing : state.playbackState),
+        );
+        break;
+      case 'position':
+        final posMs = (event['positionMs'] as num?)?.toInt() ?? 0;
+        final durMs = (event['durationMs'] as num?)?.toInt() ?? 0;
+        final pos = Duration(milliseconds: posMs);
+        final dur = durMs > 0 ? Duration(milliseconds: durMs) : state.duration;
+        state = state.copyWith(position: pos, duration: dur);
+        if (dur.inSeconds > 30 &&
+            pos.inSeconds >= (dur.inSeconds * 0.95).toInt() &&
+            state.playbackState == PlaybackState.playing &&
+            state.nextEpisodeItem == null &&
+            state.currentItem?.type == MediaType.series) {
+          _resolveNextEpisode();
+        }
+        break;
+      case 'duration':
+        final durMs = (event['durationMs'] as num?)?.toInt() ?? 0;
+        if (durMs > 0) {
+          state = state.copyWith(duration: Duration(milliseconds: durMs));
+        }
+        break;
+      case 'tracks':
+        final audioRaw = event['audioTracks'];
+        final subRaw = event['subtitleTracks'];
+        final audioTracks = audioRaw is List
+            ? audioRaw.whereType<Map>().map(LibVlcTrack.fromMap).toList()
+            : state.vlcAudioTracks;
+        final subTracks = subRaw is List
+            ? subRaw.whereType<Map>().map(LibVlcTrack.fromMap).toList()
+            : state.vlcSubtitleTracks;
+        state = state.copyWith(
+          vlcAudioTracks: audioTracks,
+          vlcSubtitleTracks: subTracks,
+          activeVlcAudioTrack:
+              (event['activeAudioTrack'] as num?)?.toInt() ??
+                  state.activeVlcAudioTrack,
+          activeVlcSubtitleTrack:
+              (event['activeSubtitleTrack'] as num?)?.toInt() ??
+                  state.activeVlcSubtitleTrack,
+        );
+        break;
+      case 'completed':
+        state = state.copyWith(playbackState: PlaybackState.completed);
+        _saveCurrentPosition();
+        _markWatchedIfComplete();
+        if (state.currentItem?.type == MediaType.live) {
+          _scheduleReconnect();
+        }
+        break;
+      case 'error':
+        final msg = event['message']?.toString() ?? 'LibVLC playback error';
+        _cancelReconnectTimer();
+        if (state.currentItem?.type == MediaType.live &&
+            _reconnectAttempt < _maxReconnectAttempts) {
+          _scheduleReconnect();
+        } else {
+          state = state.copyWith(
+            isBuffering: false,
+            playbackState: PlaybackState.failed,
+            errorMessage: msg,
+          );
+        }
+        break;
+    }
+  }
+
   // ─── Reconnection ─────────────────────────────────────────────────────────
 
   void _startStallDetection() {
@@ -326,10 +471,28 @@ class PlayerController extends StateNotifier<PlayerState>
 
       try {
         final headers = await _getHttpHeaders();
-        await player.open(
-          Media(_playbackUrlFor(item), httpHeaders: headers),
-          play: true,
-        );
+        // On odd reconnect attempts, try alternating between HLS (.m3u8) and MPEG-TS (.ts)
+        // in case the IPTV server does not serve this channel in the default container.
+        final baseUrl = _playbackUrlFor(item);
+        String urlToTry = baseUrl;
+        if (_reconnectAttempt.isOdd) {
+          if (baseUrl.toLowerCase().endsWith('.ts')) {
+            urlToTry = _playbackUrlFor(item, format: LiveStreamFormat.hls);
+          } else if (baseUrl.toLowerCase().endsWith('.m3u8')) {
+            urlToTry = _playbackUrlFor(item, format: LiveStreamFormat.ts);
+          }
+        }
+        if (_usingLibVlc) {
+          await libVlcBridge.open(
+            url: urlToTry,
+            headers: headers,
+          );
+        } else {
+          await player.open(
+            Media(urlToTry, httpHeaders: headers),
+            play: true,
+          );
+        }
         // Reset reconnect counter on successful open
         _reconnectAttempt = 0;
       } catch (_) {
@@ -359,35 +522,97 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   Future<void> setAspectRatio(String aspect) async {
-    await _setMpvProperty('video-aspect-override', aspect);
+    if (_usingLibVlc) {
+      await libVlcBridge.setAspectRatio(aspect);
+    } else {
+      await _setMpvProperty('video-aspect-override', aspect);
+    }
+  }
+
+  Future<void> setVlcAudioTrack(int trackId) async {
+    if (!_usingLibVlc) return;
+    await libVlcBridge.setAudioTrack(trackId);
+    state = state.copyWith(activeVlcAudioTrack: trackId);
+  }
+
+  Future<void> setVlcSubtitleTrack(int trackId) async {
+    if (!_usingLibVlc) return;
+    await libVlcBridge.setSubtitleTrack(trackId);
+    state = state.copyWith(activeVlcSubtitleTrack: trackId);
+  }
+
+  Future<void> setPlaybackEngine(PlaybackEngine engine) async {
+    await _preferencesLoaded;
+    final target = (engine == PlaybackEngine.libVlc && LibVlcBridge.isSupported)
+        ? PlaybackEngine.libVlc
+        : PlaybackEngine.mediaKit;
+    if (state.playbackEngine == target) return;
+
+    final activeItem = state.currentItem;
+    final wasFullscreen = state.isFullscreen;
+    final resumePos = state.position;
+
+    // Stop previous engine cleanly before switching
+    try {
+      await player.stop();
+    } catch (_) {}
+    try {
+      await libVlcBridge.stop();
+    } catch (_) {}
+
+    state = state.copyWith(
+      playbackEngine: target,
+      clearError: true,
+      vlcAudioTracks: const [],
+      vlcSubtitleTracks: const [],
+    );
+
+    try {
+      await _storage.savePlaylistCredentials(
+        'filimu_playback_engine',
+        target.name,
+      );
+    } catch (_) {}
+
+    if (activeItem != null) {
+      _currentOpenUrl = null;
+      await playItem(
+        activeItem.copyWith(positionSeconds: resumePos.inSeconds),
+        startFullscreen: wasFullscreen,
+      );
+    }
   }
 
   // ─── Performance Profiles ────────────────────────────────────────────────
 
   Future<void> applyProfile(PlaybackProfile profile) async {
     state = state.copyWith(playbackProfile: profile);
+    // On Android, let media_kit's VideoController manage hwdec/vo (e.g. S/W
+    // rendering on emulators where MediaCodec discards frames).
+    final isAndroid =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
     try {
       switch (profile) {
         case PlaybackProfile.auto:
-          await _setMpvProperty('hwdec', 'auto-safe');
+          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
           await _setMpvProperty('cache', 'yes');
           await _setMpvProperty('cache-secs', '30');
           await _setMpvProperty('demuxer-max-bytes', '67108864'); // 64 MiB
           break;
         case PlaybackProfile.dataSaver:
-          await _setMpvProperty('hwdec', 'auto-safe');
+          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
           await _setMpvProperty('cache', 'yes');
           await _setMpvProperty('cache-secs', '15');
           await _setMpvProperty('demuxer-max-bytes', '33554432'); // 32 MiB
           break;
         case PlaybackProfile.moreStable:
-          await _setMpvProperty('hwdec', 'auto-safe');
+          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
           await _setMpvProperty('cache', 'yes');
           await _setMpvProperty('cache-secs', '90');
           await _setMpvProperty('demuxer-max-bytes', '134217728'); // 128 MiB
           break;
         case PlaybackProfile.highQuality:
-          await _setMpvProperty('hwdec', 'auto');
+          if (!isAndroid) await _setMpvProperty('hwdec', 'auto');
           await _setMpvProperty('cache', 'yes');
           await _setMpvProperty('cache-secs', '60');
           await _setMpvProperty('demuxer-max-bytes', '134217728'); // 128 MiB
@@ -574,6 +799,56 @@ class PlayerController extends StateNotifier<PlayerState>
     return uri.replace(path: path).toString();
   }
 
+  /// Resolves Stalker Portal `cmd` links via `create_link` when playing from a
+  /// Stalker playlist, otherwise applies standard live stream format rules.
+  Future<String> _resolvePlaybackUrl(MediaItem item) async {
+    final raw = item.streamUrl ?? '';
+    if (raw.isEmpty) return '';
+
+    final client = _stalkerClient;
+    final playlistId = item.playlistId;
+    if (client != null && playlistId != null) {
+      try {
+        final playlist = await _db.getPlaylist(playlistId);
+        if (playlist != null &&
+            playlist.type == 'stalker' &&
+            playlist.serverUrl != null &&
+            playlist.macAddress != null) {
+          var creds = _stalkerCredsCache[playlistId] ??
+              StalkerCredentials(
+                serverUrl: playlist.serverUrl!,
+                macAddress: playlist.macAddress!,
+              );
+          if (creds.token == null) {
+            final token = await client.handshake(creds);
+            if (token != null && token.isNotEmpty) {
+              creds = creds.copyWith(token: token);
+              await client.getProfile(creds);
+            }
+            _stalkerCredsCache[playlistId] = creds;
+          }
+
+          final stalkerType = item.type == MediaType.live ? 'itv' : 'vod';
+          final created = await client.createLink(
+            creds,
+            type: stalkerType,
+            cmd: raw,
+          );
+          if (created != null && created.isNotEmpty) {
+            return created;
+          }
+          final direct = StalkerClient.extractDirectUrl(raw);
+          if (direct != null) return direct;
+        }
+      } catch (_) {
+        final direct = StalkerClient.extractDirectUrl(raw);
+        if (direct != null) return direct;
+      }
+    }
+
+    return _playbackUrlFor(item);
+  }
+
   // ─── Core Playback ───────────────────────────────────────────────────────
 
   Future<void> playItem(MediaItem item, {bool startFullscreen = false}) async {
@@ -612,18 +887,37 @@ class PlayerController extends StateNotifier<PlayerState>
       try {
         state = state.copyWith(playbackState: PlaybackState.loading);
         final headers = await _getHttpHeaders();
-        await applyProfile(state.playbackProfile);
-        await player.open(
-          Media(
-            _playbackUrlFor(item),
-            httpHeaders: headers,
-            start: resumeSeconds > 0 ? Duration(seconds: resumeSeconds) : null,
-          ),
-          play: true,
-        );
-        try {
-          await player.setRate(state.playbackRate);
-        } catch (_) {}
+        final resolvedUrl = await _resolvePlaybackUrl(item);
+        if (_usingLibVlc) {
+          try {
+            await player.stop();
+          } catch (_) {}
+          await libVlcBridge.open(
+            url: resolvedUrl,
+            headers: headers,
+            start: resumeSeconds > 0
+                ? Duration(seconds: resumeSeconds)
+                : Duration.zero,
+          );
+          await libVlcBridge.setVolume(state.volume);
+          await libVlcBridge.setRate(state.playbackRate);
+        } else {
+          try {
+            await libVlcBridge.stop();
+          } catch (_) {}
+          await applyProfile(state.playbackProfile);
+          await player.open(
+            Media(
+              resolvedUrl,
+              httpHeaders: headers,
+              start: resumeSeconds > 0 ? Duration(seconds: resumeSeconds) : null,
+            ),
+            play: true,
+          );
+          try {
+            await player.setRate(state.playbackRate);
+          } catch (_) {}
+        }
 
         await _persistEpisodeForContinueWatching(item);
         // Record in recently viewed
@@ -638,12 +932,28 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   Future<void> switchStream(MediaItem item) async {
+    // Remember previous live channel for quick back-zapping on TV remotes
+    if (state.currentItem?.type == MediaType.live &&
+        item.type == MediaType.live &&
+        state.currentItem?.providerId != item.providerId) {
+      _previousLiveChannel = state.currentItem;
+    }
     // Proper stream switch: save position of current item first
     await _saveCurrentPosition();
     _cancelReconnectTimer();
     _reconnectAttempt = 0;
-    await player.stop();
+    if (_usingLibVlc) {
+      await libVlcBridge.stop();
+    } else {
+      await player.stop();
+    }
     await playItem(item, startFullscreen: state.isFullscreen);
+  }
+
+  Future<void> playPreviousWatchedChannel() async {
+    final prev = _previousLiveChannel;
+    if (prev == null) return;
+    await switchStream(prev);
   }
 
   Future<void> playNextChannel() async {
@@ -713,6 +1023,10 @@ class PlayerController extends StateNotifier<PlayerState>
   // ─── Playback Controls ───────────────────────────────────────────────────
 
   Future<void> togglePlayPause() async {
+    if (_usingLibVlc) {
+      await libVlcBridge.togglePlayPause();
+      return;
+    }
     await player.playOrPause();
     if (!player.state.playing) {
       await _saveCurrentPosition();
@@ -720,13 +1034,22 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   Future<void> seek(Duration position) async {
-    state = state.copyWith(playbackState: PlaybackState.seeking);
-    await player.seek(position);
+    state = state.copyWith(playbackState: PlaybackState.seeking, position: position);
+    if (_usingLibVlc) {
+      await libVlcBridge.seek(position);
+    } else {
+      await player.seek(position);
+    }
   }
 
   Future<void> setVolume(double volume) async {
-    await player.setVolume(volume.clamp(0.0, 100.0));
-    state = state.copyWith(isMuted: volume == 0);
+    final clamped = volume.clamp(0.0, 100.0);
+    if (_usingLibVlc) {
+      await libVlcBridge.setVolume(clamped);
+    } else {
+      await player.setVolume(clamped);
+    }
+    state = state.copyWith(volume: clamped, isMuted: clamped == 0);
   }
 
   Future<void> toggleMute() async {
@@ -738,7 +1061,11 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   Future<void> setPlaybackRate(double rate) async {
-    await player.setRate(rate);
+    if (_usingLibVlc) {
+      await libVlcBridge.setRate(rate);
+    } else {
+      await player.setRate(rate);
+    }
     state = state.copyWith(playbackRate: rate);
   }
 
@@ -748,12 +1075,15 @@ class PlayerController extends StateNotifier<PlayerState>
     state = state.copyWith(isFullscreen: true, isMiniPlayerVisible: false);
   }
 
+  void minimizePlayer() {
+    if (state.currentItem == null) return;
+    state = state.copyWith(isFullscreen: false, isMiniPlayerVisible: true);
+  }
+
   Future<void> closePlayer() async {
-    await player.pause();
-    await _saveCurrentPosition();
     _cancelReconnectTimer();
-    await player.stop();
     _currentOpenUrl = null;
+    final saveFuture = _saveCurrentPosition();
     state = state.copyWith(
       isMiniPlayerVisible: false,
       isFullscreen: false,
@@ -763,7 +1093,16 @@ class PlayerController extends StateNotifier<PlayerState>
       duration: Duration.zero,
       currentItem: null,
       playbackState: PlaybackState.idle,
+      clearError: true,
+      clearNextEpisode: true,
+      vlcAudioTracks: const [],
+      vlcSubtitleTracks: const [],
     );
+    try {
+      await saveFuture;
+      await player.stop();
+      await libVlcBridge.stop();
+    } catch (_) {}
   }
 
   Future<void> closeMiniPlayer() => closePlayer();
@@ -785,35 +1124,34 @@ class PlayerController extends StateNotifier<PlayerState>
       return;
     }
 
-    final position = player.state.position;
-    final duration = player.state.duration;
+    final position = _usingLibVlc ? state.position : player.state.position;
+    final duration = _usingLibVlc ? state.duration : player.state.duration;
     if (position == Duration.zero) return;
 
     try {
       final playlistId = item.playlistId;
       if (playlistId == null || item.providerId == null) return;
 
-      await _db.into(_db.playbackPositionsTable).insertOnConflictUpdate(
-            PlaybackPositionsTableCompanion(
-              playlistId: drift.Value(playlistId),
-              contentProviderId: drift.Value(item.providerId!),
-              contentType: drift.Value(item.type == MediaType.series ||
-                      item.type == MediaType.episode
-                  ? 'episode'
-                  : 'vod'),
-              seriesProviderId: drift.Value(item.seriesProviderId),
-              seasonNumber: drift.Value(item.seasonNumber),
-              episodeNumber: drift.Value(item.episodeNumber),
-              positionSeconds: drift.Value(position.inSeconds),
-              durationSeconds: drift.Value(
-                duration.inSeconds > 0 ? duration.inSeconds : null,
-              ),
-              updatedAt: drift.Value(DateTime.now()),
-            ),
-          );
-    } catch (error, stackTrace) {
+      await _db.savePlaybackPosition(
+        PlaybackPositionsTableCompanion(
+          playlistId: drift.Value(playlistId),
+          contentProviderId: drift.Value(item.providerId!),
+          contentType: drift.Value(item.type == MediaType.series ||
+                  item.type == MediaType.episode
+              ? 'episode'
+              : 'vod'),
+          seriesProviderId: drift.Value(item.seriesProviderId),
+          seasonNumber: drift.Value(item.seasonNumber),
+          episodeNumber: drift.Value(item.episodeNumber),
+          positionSeconds: drift.Value(position.inSeconds),
+          durationSeconds: drift.Value(
+            duration.inSeconds > 0 ? duration.inSeconds : null,
+          ),
+          updatedAt: drift.Value(DateTime.now()),
+        ),
+      );
+    } catch (error) {
       debugPrint('Failed to save playback position: $error');
-      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -829,20 +1167,20 @@ class PlayerController extends StateNotifier<PlayerState>
       final playlistId = item.playlistId;
       if (playlistId == null || item.providerId == null) return;
       // Save at 100% to mark watched (position == duration)
-      await _db.into(_db.playbackPositionsTable).insertOnConflictUpdate(
-            PlaybackPositionsTableCompanion(
-              playlistId: drift.Value(playlistId),
-              contentProviderId: drift.Value(item.providerId!),
-              contentType: drift.Value(
-                  item.type == MediaType.series ? 'episode' : 'vod'),
-              seriesProviderId: drift.Value(item.seriesProviderId),
-              seasonNumber: drift.Value(item.seasonNumber),
-              episodeNumber: drift.Value(item.episodeNumber),
-              positionSeconds: drift.Value(dur.inSeconds), // mark as completed
-              durationSeconds: drift.Value(dur.inSeconds),
-              updatedAt: drift.Value(DateTime.now()),
-            ),
-          );
+      await _db.savePlaybackPosition(
+        PlaybackPositionsTableCompanion(
+          playlistId: drift.Value(playlistId),
+          contentProviderId: drift.Value(item.providerId!),
+          contentType: drift.Value(
+              item.type == MediaType.series ? 'episode' : 'vod'),
+          seriesProviderId: drift.Value(item.seriesProviderId),
+          seasonNumber: drift.Value(item.seasonNumber),
+          episodeNumber: drift.Value(item.episodeNumber),
+          positionSeconds: drift.Value(dur.inSeconds), // mark as completed
+          durationSeconds: drift.Value(dur.inSeconds),
+          updatedAt: drift.Value(DateTime.now()),
+        ),
+      );
     } catch (_) {}
   }
 
@@ -869,9 +1207,8 @@ class PlayerController extends StateNotifier<PlayerState>
         return null;
       }
       return pos;
-    } catch (error, stackTrace) {
+    } catch (error) {
       debugPrint('Failed to load playback position: $error');
-      debugPrintStack(stackTrace: stackTrace);
       return null;
     }
   }
@@ -881,11 +1218,19 @@ class PlayerController extends StateNotifier<PlayerState>
   Future<void> _recordRecentlyViewed(MediaItem item) async {
     if (item.contentDbId == null || item.playlistId == null) return;
     try {
-      await _db.into(_db.recentlyViewedTable).insertOnConflictUpdate(
-            RecentlyViewedTableCompanion(
-              playlistId: drift.Value(item.playlistId!),
-              contentId: drift.Value(item.contentDbId!),
-              viewedAt: drift.Value(DateTime.now()),
+      final entry = RecentlyViewedTableCompanion(
+        playlistId: drift.Value(item.playlistId!),
+        contentId: drift.Value(item.contentDbId!),
+        viewedAt: drift.Value(DateTime.now()),
+      );
+      await _db.into(_db.recentlyViewedTable).insert(
+            entry,
+            onConflict: drift.DoUpdate(
+              (_) => entry,
+              target: [
+                _db.recentlyViewedTable.playlistId,
+                _db.recentlyViewedTable.contentId,
+              ],
             ),
           );
     } catch (_) {}
@@ -899,21 +1244,29 @@ class PlayerController extends StateNotifier<PlayerState>
     }
 
     try {
-      await _db.into(_db.contentItemsTable).insertOnConflictUpdate(
-            ContentItemsTableCompanion(
-              playlistId: drift.Value(item.playlistId!),
-              title: drift.Value(item.title),
-              type: const drift.Value('series'),
-              providerId: drift.Value(item.providerId!),
-              streamUrl: drift.Value(item.streamUrl),
-              containerExtension: const drift.Value(null),
-              posterUrl: drift.Value(item.posterUrl),
-              backdropUrl: drift.Value(item.backdropUrl),
+      final entry = ContentItemsTableCompanion(
+        playlistId: drift.Value(item.playlistId!),
+        title: drift.Value(item.title),
+        type: const drift.Value('series'),
+        providerId: drift.Value(item.providerId!),
+        streamUrl: drift.Value(item.streamUrl),
+        containerExtension: const drift.Value(null),
+        posterUrl: drift.Value(item.posterUrl),
+        backdropUrl: drift.Value(item.backdropUrl),
+      );
+      await _db.into(_db.contentItemsTable).insert(
+            entry,
+            onConflict: drift.DoUpdate(
+              (_) => entry,
+              target: [
+                _db.contentItemsTable.playlistId,
+                _db.contentItemsTable.type,
+                _db.contentItemsTable.providerId,
+              ],
             ),
           );
-    } catch (error, stackTrace) {
+    } catch (error) {
       debugPrint('Failed to save series episode for continue watching: $error');
-      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -953,6 +1306,9 @@ class PlayerController extends StateNotifier<PlayerState>
     }
     if (raw.contains('timeout') || raw.contains('Timeout')) {
       return 'Connection timed out. Check your internet connection and try again.';
+    }
+    if (raw.contains('Failed to recognize file format')) {
+      return 'Could not recognize stream format. The provider stream may be offline or unsupported. Tap Retry or try another source.';
     }
     if (raw.contains('unsupported') || raw.contains('codec')) {
       return 'Unsupported stream format or codec.';
@@ -1004,5 +1360,6 @@ final playerControllerProvider =
     StateNotifierProvider<PlayerController, PlayerState>((ref) {
   final db = ref.watch(databaseProvider);
   final storage = ref.watch(secureStorageProvider);
-  return PlayerController(db, storage);
+  final apiClient = ref.watch(apiClientProvider);
+  return PlayerController(db, storage, dio: apiClient.dio);
 });

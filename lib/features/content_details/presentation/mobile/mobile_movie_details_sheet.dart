@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -101,98 +102,130 @@ class MobileMovieDetailsSheet extends ConsumerWidget {
                     ),
                   ),
 
-                  // Title & Meta inside Backdrop Bottom
+                  // Title, Poster & Meta inside Backdrop Bottom
                   Positioned(
-                    left: 18,
-                    right: 18,
-                    bottom: 8,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    left: 16,
+                    right: 16,
+                    bottom: 10,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text(
-                          state.displayTitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -0.3,
+                        if (state.displayPoster != null &&
+                            state.displayPoster!.isNotEmpty) ...[
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: CachedNetworkImage(
+                              imageUrl: state.displayPoster!,
+                              width: 68,
+                              height: 100,
+                              fit: BoxFit.cover,
+                              errorWidget: (_, __, ___) =>
+                                  const SizedBox.shrink(),
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 4,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            if (state.displayYear != null)
+                          const SizedBox(width: 12),
+                        ],
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
                               Text(
-                                '${state.displayYear}',
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.65),
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w600,
+                                state.displayTitle,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 21,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: -0.3,
+                                  height: 1.15,
                                 ),
                               ),
-                            if (state.displayDuration != null)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  state.displayDuration!,
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            if (state.displayRating != null && state.displayRating! > 0)
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  const Icon(Icons.star_rounded, color: Colors.amber, size: 14),
-                                  const SizedBox(width: 3),
-                                  Text(
-                                    state.displayRating!.toStringAsFixed(1),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
+                                  if (state.displayYear != null)
+                                    Text(
+                                      '${state.displayYear}',
+                                      style: TextStyle(
+                                        color:
+                                            Colors.white.withValues(alpha: 0.7),
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
-                                  ),
+                                  if (state.displayDuration != null)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white
+                                            .withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        state.displayDuration!,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  if (state.displayRating != null &&
+                                      state.displayRating! > 0)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.star_rounded,
+                                            color: Colors.amber, size: 14),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          state.displayRating!
+                                              .toStringAsFixed(1),
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  if (state.displayAgeRating != null)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        border:
+                                            Border.all(color: Colors.white38),
+                                        borderRadius: BorderRadius.circular(3),
+                                      ),
+                                      child: Text(
+                                        state.displayAgeRating!,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                  if (state.isLoadingTmdb || state.isLoadingVod)
+                                    const SizedBox(
+                                      width: 12,
+                                      height: 12,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 1.5,
+                                        color: AppColors.primary,
+                                      ),
+                                    ),
                                 ],
                               ),
-                            if (state.displayAgeRating != null)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                decoration: BoxDecoration(
-                                  border: Border.all(color: Colors.white38),
-                                  borderRadius: BorderRadius.circular(3),
-                                ),
-                                child: Text(
-                                  state.displayAgeRating!,
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                            if (state.isLoadingTmdb || state.isLoadingVod)
-                              const SizedBox(
-                                width: 12,
-                                height: 12,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                  color: AppColors.primary,
-                                ),
-                              ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -202,101 +235,77 @@ class MobileMovieDetailsSheet extends ConsumerWidget {
 
               // ── Touch-Friendly Action Buttons ──
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                child: Row(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
                   children: [
-                    // Play Movie Button
-                    Expanded(
-                      flex: 3,
+                    SizedBox(
+                      width: double.infinity,
+                      height: 46,
                       child: ElevatedButton.icon(
                         onPressed: () => controller.playMovie(context),
-                        icon: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 24),
+                        icon: const Icon(Icons.play_arrow_rounded,
+                            color: Colors.black, size: 26),
                         label: const Text(
-                          'Watch Movie',
+                          'Play',
                           style: TextStyle(
                             color: Colors.black,
-                            fontSize: 14,
+                            fontSize: 15,
                             fontWeight: FontWeight.w800,
                           ),
                         ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          foregroundColor: Colors.black,
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(10),
                           ),
-                          elevation: 2,
+                          elevation: 0,
                         ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-
-                    // Trailer Button
-                    if (state.trailerUrl != null) ...[
-                      Expanded(
-                        flex: 2,
-                        child: OutlinedButton.icon(
-                          onPressed: () => controller.watchTrailer(context),
-                          icon: const Icon(Icons.smart_display_rounded, color: Colors.amber, size: 18),
-                          label: const Text(
-                            'Trailer',
-                            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: Colors.amber),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _DetailIconAction(
+                          icon: state.isFavorite
+                              ? Icons.check_rounded
+                              : Icons.add_rounded,
+                          label: state.isFavorite ? 'In My List' : 'My List',
+                          isHighlighted: state.isFavorite,
+                          onTap: () => controller.toggleFavorite(context),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                    ],
-
-                    // Bookmark / My List
-                    InkWell(
-                      onTap: () => controller.toggleFavorite(context),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: state.isFavorite
-                              ? AppColors.primary.withValues(alpha: 0.15)
-                              : Colors.white.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: state.isFavorite
-                                ? AppColors.primary
-                                : Colors.white.withValues(alpha: 0.15),
+                        if (state.trailerUrl != null)
+                          _DetailIconAction(
+                            icon: Icons.smart_display_rounded,
+                            label: 'Trailer',
+                            onTap: () => controller.watchTrailer(context),
                           ),
+                        if (movie.streamUrl != null &&
+                            movie.streamUrl!.isNotEmpty)
+                          _DetailIconAction(
+                            icon: Icons.download_rounded,
+                            label: 'Download',
+                            onTap: () => controller.downloadMovie(context),
+                          ),
+                        _DetailIconAction(
+                          icon: Icons.share_rounded,
+                          label: 'Share',
+                          onTap: () {
+                            final summary =
+                                '${state.displayTitle}${state.displayYear != null ? ' (${state.displayYear})' : ''} — Watching on Tamba IPTV';
+                            Clipboard.setData(ClipboardData(text: summary));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Copied title info to clipboard'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          },
                         ),
-                        child: Icon(
-                          state.isFavorite
-                              ? Icons.bookmark_added_rounded
-                              : Icons.bookmark_add_outlined,
-                          color: state.isFavorite ? AppColors.primary : Colors.white70,
-                          size: 22,
-                        ),
-                      ),
+                      ],
                     ),
-                    const SizedBox(width: 10),
-
-                    // Download Button
-                    if (movie.streamUrl != null && movie.streamUrl!.isNotEmpty)
-                      InkWell(
-                        onTap: () => controller.downloadMovie(context),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
-                          ),
-                          child: const Icon(Icons.download_rounded, color: Colors.white70, size: 22),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -528,6 +537,50 @@ class MobileMovieDetailsSheet extends ConsumerWidget {
       return CachedNetworkImage(imageUrl: poster, fit: BoxFit.cover);
     }
     return Container(color: const Color(0xFF1E1E24));
+  }
+}
+
+class _DetailIconAction extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool isHighlighted;
+
+  const _DetailIconAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isHighlighted = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: isHighlighted ? AppColors.primary : Colors.white,
+              size: 22,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: isHighlighted ? AppColors.primary : Colors.white70,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

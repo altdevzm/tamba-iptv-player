@@ -32,69 +32,100 @@ final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     initialLocation: '/home',
     routes: [
-      ShellRoute(
-        builder: (context, state, child) {
+      StatefulShellRoute.indexedStack(
+        builder: (context, state, navigationShell) {
           return AppShell(
             currentRoute: state.uri.toString(),
-            child: child,
+            navigationShell: navigationShell,
+            child: navigationShell,
           );
         },
-        routes: [
-          GoRoute(
-            path: '/home',
-            builder: (context, state) => const HomeView(),
+        branches: [
+          // Branch 0: Home
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/home',
+                builder: (context, state) => const HomeView(),
+              ),
+              GoRoute(
+                path: '/recent',
+                builder: (context, state) => const HomeView(),
+              ),
+              GoRoute(
+                path: '/watch-later',
+                builder: (context, state) => const HomeView(),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/popular',
-            builder: (context, state) => const MoviesView(),
+          // Branch 1: Live TV
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/live',
+                builder: (context, state) => const LiveTvView(),
+              ),
+              GoRoute(
+                path: '/epg',
+                builder: (context, state) => const EpgGridView(),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/live',
-            builder: (context, state) => const LiveTvView(),
+          // Branch 2: Movies
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/movies',
+                builder: (context, state) => const MoviesView(),
+              ),
+              GoRoute(
+                path: '/popular',
+                builder: (context, state) => const MoviesView(),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/series',
-            builder: (context, state) => const SeriesView(),
+          // Branch 3: Series
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/series',
+                builder: (context, state) => const SeriesView(),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/movies',
-            builder: (context, state) => const MoviesView(),
+          // Branch 4: My List
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/favorites',
+                builder: (context, state) => const FavoritesView(),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/favorites',
-            builder: (context, state) => const FavoritesView(),
-          ),
-          GoRoute(
-            path: '/playlists',
-            builder: (context, state) => const PlaylistsView(),
-          ),
-          GoRoute(
-            path: '/settings',
-            builder: (context, state) => const SettingsView(),
-          ),
-          GoRoute(
-            path: '/disclaimer',
-            builder: (context, state) => const DisclaimerView(),
-          ),
-          GoRoute(
-            path: '/recent',
-            builder: (context, state) => const HomeView(),
-          ),
-          GoRoute(
-            path: '/watch-later',
-            builder: (context, state) => const HomeView(),
-          ),
-          GoRoute(
-            path: '/downloads',
-            builder: (context, state) => const DownloadsView(),
-          ),
-          GoRoute(
-            path: '/search',
-            builder: (context, state) => const GlobalSearchView(),
-          ),
-          GoRoute(
-            path: '/epg',
-            builder: (context, state) => const EpgGridView(),
+          // Branch 5: Utility routes (Search, Settings, Playlists, Downloads, Disclaimer)
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/search',
+                builder: (context, state) => const GlobalSearchView(),
+              ),
+              GoRoute(
+                path: '/settings',
+                builder: (context, state) => const SettingsView(),
+              ),
+              GoRoute(
+                path: '/playlists',
+                builder: (context, state) => const PlaylistsView(),
+              ),
+              GoRoute(
+                path: '/downloads',
+                builder: (context, state) => const DownloadsView(),
+              ),
+              GoRoute(
+                path: '/disclaimer',
+                builder: (context, state) => const DisclaimerView(),
+              ),
+            ],
           ),
         ],
       ),
@@ -146,24 +177,39 @@ final routerProvider = Provider<GoRouter>((ref) {
 
 class AppShell extends ConsumerWidget {
   final String currentRoute;
+  final StatefulNavigationShell? navigationShell;
   final Widget child;
 
   const AppShell({
     super.key,
     required this.currentRoute,
+    this.navigationShell,
     required this.child,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     ref.watch(effectivePlaylistIdProvider);
-    final playerState = ref.watch(playerControllerProvider);
+    final isFullscreen =
+        ref.watch(playerControllerProvider.select((s) => s.isFullscreen));
 
-    if (playerState.isFullscreen) {
+    if (isFullscreen) {
       return const FullscreenPlayerView();
     }
 
-    return Focus(
+    final isOnHome = currentRoute == '/home' || currentRoute == '/';
+
+    return PopScope(
+      canPop: isOnHome,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (navigationShell != null) {
+          navigationShell!.goBranch(0);
+        } else {
+          context.go('/home');
+        }
+      },
+      child: Focus(
       autofocus: false,
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -193,6 +239,7 @@ class AppShell extends ConsumerWidget {
 
         if (event.logicalKey == LogicalKeyboardKey.keyF) {
           final ctrl = ref.read(playerControllerProvider.notifier);
+          final playerState = ref.read(playerControllerProvider);
           if (playerState.isFullscreen) {
             ctrl.closePlayer();
           } else if (playerState.currentItem != null) {
@@ -203,6 +250,7 @@ class AppShell extends ConsumerWidget {
 
         if (event.logicalKey == LogicalKeyboardKey.escape) {
           final ctrl = ref.read(playerControllerProvider.notifier);
+          final playerState = ref.read(playerControllerProvider);
           if (playerState.isFullscreen) {
             ctrl.closePlayer();
             return KeyEventResult.handled;
@@ -213,30 +261,15 @@ class AppShell extends ConsumerWidget {
       },
       child: Stack(
         children: [
-          Positioned(
-            top: -150,
-            left: -150,
-            child: Container(
-              width: 500,
-              height: 500,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    AppColors.primary.withValues(alpha: 0.08),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-            ),
-          ),
           PlatformNavigationShell(
             currentRoute: currentRoute,
+            navigationShell: navigationShell,
             child: child,
           ),
           const FloatingMiniPlayerPill(),
         ],
       ),
+    ),
     );
   }
 }

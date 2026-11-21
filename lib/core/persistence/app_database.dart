@@ -130,6 +130,17 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  Future<void> batchInsertContentItemsFast(
+      List<ContentItemsTableCompanion> entries) async {
+    await batch((b) {
+      b.insertAll(
+        contentItemsTable,
+        entries,
+        mode: InsertMode.insertOrIgnore,
+      );
+    });
+  }
+
   // --- Favorites Queries ---
   Stream<List<FavoritesTableData>> watchFavorites(String playlistId, {String? type}) {
     var query = select(favoritesTable)..where((t) => t.playlistId.equals(playlistId));
@@ -188,7 +199,17 @@ class AppDatabase extends _$AppDatabase {
           .watch();
 
   Future<void> savePlaybackPosition(PlaybackPositionsTableCompanion position) =>
-      into(playbackPositionsTable).insertOnConflictUpdate(position);
+      into(playbackPositionsTable).insert(
+        position,
+        onConflict: DoUpdate(
+          (_) => position,
+          target: [
+            playbackPositionsTable.playlistId,
+            playbackPositionsTable.contentType,
+            playbackPositionsTable.contentProviderId,
+          ],
+        ),
+      );
 
   // --- EPG Queries ---
   Future<List<EpgProgramsTableData>> getCurrentAndNextPrograms(String channelId, DateTime now) =>

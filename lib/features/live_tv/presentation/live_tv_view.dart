@@ -1,8 +1,8 @@
-import 'dart:convert';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:go_router/go_router.dart';
 
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
@@ -13,7 +13,6 @@ import '../../content_details/domain/device_form_factor.dart';
 import '../../content_details/presentation/adaptive_details_coordinator.dart';
 import '../../../shared/models/media_item.dart';
 import '../../player/data/player_controller.dart';
-import '../../xtream/data/xtream_client.dart';
 import '../../parental_lock/presentation/pin_prompt_dialog.dart';
 
 // ---------------------------------------------------------------------------
@@ -190,6 +189,28 @@ final _liveCategoriesProvider =
   return db.watchCategories(playlistId, 'live');
 });
 
+/// Watches favorite live channel provider IDs for the active playlist.
+final _liveFavoriteIdsProvider =
+    StreamProvider.autoDispose<Set<String>>((ref) {
+  final playlistId = ref.watch(activePlaylistIdProvider);
+  if (playlistId == null) return Stream.value({});
+  final db = ref.watch(databaseProvider);
+  return db
+      .watchFavorites(playlistId, type: 'live')
+      .map((rows) => rows.map((r) => r.providerId).toSet());
+});
+
+/// Watches recently watched content DB IDs for the active playlist.
+final _recentLiveChannelIdsProvider =
+    StreamProvider.autoDispose<List<int>>((ref) {
+  final playlistId = ref.watch(activePlaylistIdProvider);
+  if (playlistId == null) return Stream.value([]);
+  final db = ref.watch(databaseProvider);
+  return db
+      .watchRecentlyViewed(playlistId)
+      .map((rows) => rows.map((r) => r.contentId).toList());
+});
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
@@ -257,12 +278,15 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
     final notifier = ref.read(liveTvNotifierProvider.notifier);
     final channelsAsync = ref.watch(_liveChannelsProvider);
     final categoriesAsync = ref.watch(_liveCategoriesProvider);
+    final favoriteIds = ref.watch(_liveFavoriteIdsProvider).valueOrNull ?? {};
+    final recentIds =
+        ref.watch(_recentLiveChannelIdsProvider).valueOrNull ?? [];
 
     // No playlist selected
     if (activePlaylistId == null) {
       return const _EmptyState(
         icon: Icons.live_tv_rounded,
-        message: 'No playlist added yet.\nGo to Playlists to add one.',
+        message: 'No playlist added yet.\nGo to Settings to add one.',
       );
     }
 
@@ -275,56 +299,150 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
       body: Padding(
         padding: EdgeInsets.symmetric(
           horizontal: isMobile ? 16 : 28,
-          vertical: isMobile ? 12 : 20,
+          vertical: isMobile ? 10 : 20,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ---- Header ----
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text(
-                  'Live Television',
-                  style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
+                Expanded(
+                  child: Text(
+                    'Live TV',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: isMobile ? 22 : 24,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.3,
+                    ),
                   ),
                 ),
-                ElevatedButton.icon(
-                  onPressed: () => RemindersDialog.show(context),
-                  icon: const Icon(Icons.alarm_on_rounded, size: 16),
-                  label: const Text('Reminders'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white.withValues(alpha: 0.08),
-                    foregroundColor: Colors.white,
+                InkWell(
+                  onTap: () => context.go('/epg'),
+                  borderRadius: BorderRadius.circular(18),
+                  child: Container(
                     padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      side: BorderSide(
-                          color: Colors.white.withValues(alpha: 0.1)),
+                        const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.12)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.view_timeline_rounded,
+                            size: 15, color: Colors.white),
+                        SizedBox(width: 5),
+                        Text(
+                          'Guide',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () => RemindersDialog.show(context),
+                  borderRadius: BorderRadius.circular(18),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.12)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.alarm_on_rounded,
+                            size: 15, color: Colors.white),
+                        SizedBox(width: 5),
+                        Text(
+                          'Reminders',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
 
-            if (!isMobile) ...[
-              _SearchBar(
-                controller: _searchController,
-                onChanged: notifier.search,
-              ),
-              const SizedBox(height: 12),
-            ],
+            // ---- Search Bar ----
+            _SearchBar(
+              controller: _searchController,
+              onChanged: notifier.search,
+            ),
+            const SizedBox(height: 10),
 
-            // ---- Sort & Quality Filters Row ----
+            // ---- Favorites, Sort & Quality Filters Row ----
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
+                  // Favorites Only Pill
+                  InkWell(
+                    onTap: notifier.toggleFavoritesOnly,
+                    borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: liveTvState.favoritesOnly
+                            ? AppColors.primary.withValues(alpha: 0.2)
+                            : Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: liveTvState.favoritesOnly
+                              ? AppColors.primary
+                              : Colors.white.withValues(alpha: 0.12),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            liveTvState.favoritesOnly
+                                ? Icons.bookmark_rounded
+                                : Icons.bookmark_border_rounded,
+                            size: 14,
+                            color: liveTvState.favoritesOnly
+                                ? AppColors.primary
+                                : Colors.white60,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'Favorites',
+                            style: TextStyle(
+                              color: liveTvState.favoritesOnly
+                                  ? Colors.white
+                                  : Colors.white70,
+                              fontSize: 12,
+                              fontWeight: liveTvState.favoritesOnly
+                                  ? FontWeight.w700
+                                  : FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   // Sort By Pill
                   PopupMenuButton<LiveTvSortOption>(
                     onSelected: notifier.setSortBy,
@@ -486,26 +604,117 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
 
             const SizedBox(height: 12),
 
-            // ---- Category Chips ----
-            // ---- Live TV category selector ----
+            // ---- Live TV category chips ----
             categoriesAsync.when(
-              data: (categories) => _CategoryDropdown(
-                categories: categories,
-                selectedCategoryId: liveTvState.selectedCategoryId,
-                unlockedCategoryIds: liveTvState.unlockedCategoryIds,
-                onSelected: _handleCategorySelect,
-              ),
+              data: (categories) {
+                if (categories.isEmpty) return const SizedBox.shrink();
+                return SizedBox(
+                  height: 36,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: categories.length + 1,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        final isSelected =
+                            liveTvState.selectedCategoryId == null;
+                        return ChoiceChip(
+                          label: const Text('All Channels'),
+                          selected: isSelected,
+                          onSelected: (_) => _handleCategorySelect(null),
+                          backgroundColor: Colors.white.withValues(alpha: 0.05),
+                          selectedColor: AppColors.primary,
+                          labelStyle: TextStyle(
+                            color: isSelected ? Colors.white : Colors.white70,
+                            fontSize: 12,
+                            fontWeight: isSelected
+                                ? FontWeight.w700
+                                : FontWeight.w500,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            side: BorderSide(
+                              color: isSelected
+                                  ? AppColors.primary
+                                  : Colors.white.withValues(alpha: 0.12),
+                            ),
+                          ),
+                        );
+                      }
+                      final cat = categories[index - 1];
+                      final isSelected =
+                          liveTvState.selectedCategoryId == cat.id;
+                      final sensitive = cat.locked ||
+                          cat.name.toLowerCase().contains('adult') ||
+                          cat.name.toLowerCase().contains('xxx') ||
+                          cat.name.toLowerCase().contains('18+');
+                      final locked = sensitive &&
+                          !liveTvState.unlockedCategoryIds.contains(cat.id);
+
+                      return ChoiceChip(
+                        label: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (locked) ...[
+                              const Icon(Icons.lock_outline,
+                                  size: 12, color: Colors.amber),
+                              const SizedBox(width: 4),
+                            ],
+                            Text(cat.name),
+                          ],
+                        ),
+                        selected: isSelected,
+                        onSelected: (_) => _handleCategorySelect(cat),
+                        backgroundColor: Colors.white.withValues(alpha: 0.05),
+                        selectedColor: AppColors.primary,
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : Colors.white70,
+                          fontSize: 12,
+                          fontWeight:
+                              isSelected ? FontWeight.w700 : FontWeight.w500,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
+                          side: BorderSide(
+                            color: isSelected
+                                ? AppColors.primary
+                                : Colors.white.withValues(alpha: 0.12),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
               loading: () => const SizedBox(height: 36),
               error: (_, __) => const SizedBox(height: 36),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
 
             // ---- Channel List ----
             Expanded(
               child: channelsAsync.when(
                 data: (allChannels) {
+                  final recentChannels = recentIds.isEmpty ||
+                          liveTvState.searchQuery.isNotEmpty
+                      ? const <ContentItemsTableData>[]
+                      : recentIds
+                          .map((id) {
+                            for (final c in allChannels) {
+                              if (c.id == id) return c;
+                            }
+                            return null;
+                          })
+                          .whereType<ContentItemsTableData>()
+                          .take(10)
+                          .toList();
+
                   final query = liveTvState.searchQuery.toLowerCase();
                   var filtered = allChannels.where((ch) {
+                    if (liveTvState.favoritesOnly &&
+                        !favoriteIds.contains(ch.providerId)) {
+                      return false;
+                    }
                     final matchesCategory =
                         liveTvState.selectedCategoryId == null ||
                             ch.categoryId == liveTvState.selectedCategoryId;
@@ -555,6 +764,12 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
                       filtered.sort((a, b) => a.id.compareTo(b.id));
                       break;
                     case LiveTvSortOption.favoritesFirst:
+                      filtered.sort((a, b) {
+                        final aFav = favoriteIds.contains(a.providerId) ? 0 : 1;
+                        final bFav = favoriteIds.contains(b.providerId) ? 0 : 1;
+                        if (aFav != bFav) return aFav.compareTo(bFav);
+                        return a.title.compareTo(b.title);
+                      });
                       break;
                   }
 
@@ -567,7 +782,92 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
                     );
                   }
 
-                  return _ChannelList(channels: filtered, isTv: isTv);
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (recentChannels.isNotEmpty) ...[
+                        const Text(
+                          'Recently Watched',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: 62,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: recentChannels.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: 8),
+                            itemBuilder: (context, index) {
+                              final ch = recentChannels[index];
+                              return InkWell(
+                                onTap: () {
+                                  if (ch.streamUrl != null &&
+                                      ch.streamUrl!.isNotEmpty) {
+                                    ref
+                                        .read(playerControllerProvider.notifier)
+                                        .playItem(
+                                          MediaItem(
+                                            id: ch.providerId,
+                                            title: ch.title,
+                                            type: MediaType.live,
+                                            posterUrl: ch.posterUrl,
+                                            streamUrl: ch.streamUrl,
+                                            playlistId: ch.playlistId,
+                                            providerId: ch.providerId,
+                                            contentDbId: ch.id,
+                                          ),
+                                          startFullscreen: true,
+                                        );
+                                  }
+                                },
+                                borderRadius: BorderRadius.circular(10),
+                                child: Container(
+                                  width: 150,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.surface,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color:
+                                          Colors.white.withValues(alpha: 0.08),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      _ChannelLogo(logoUrl: ch.posterUrl),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          ch.title,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      Expanded(
+                        child: _ChannelList(channels: filtered, isTv: isTv),
+                      ),
+                    ],
+                  );
                 },
                 loading: () => const Center(
                   child: CircularProgressIndicator(color: AppColors.primary),
@@ -632,95 +932,6 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
-class _CategoryDropdown extends StatelessWidget {
-  final List<CategoriesTableData> categories;
-  final int? selectedCategoryId;
-  final Set<int> unlockedCategoryIds;
-  final ValueChanged<CategoriesTableData?> onSelected;
-
-  const _CategoryDropdown({
-    required this.categories,
-    required this.selectedCategoryId,
-    required this.unlockedCategoryIds,
-    required this.onSelected,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final selectedExists =
-        categories.any((cat) => cat.id == selectedCategoryId);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceElevated,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.category_outlined,
-              color: AppColors.textSecondary, size: 18),
-          const SizedBox(width: 10),
-          const Text(
-            'Category',
-            style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<int?>(
-                isExpanded: true,
-                value: selectedExists ? selectedCategoryId : null,
-                dropdownColor: AppColors.surfaceElevated,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-                items: [
-                  const DropdownMenuItem<int?>(
-                    value: null,
-                    child: Text('All channels'),
-                  ),
-                  ...categories.map((cat) {
-                    final sensitive = cat.locked ||
-                        cat.name.toLowerCase().contains('adult') ||
-                        cat.name.toLowerCase().contains('xxx') ||
-                        cat.name.toLowerCase().contains('18+');
-                    final locked =
-                        sensitive && !unlockedCategoryIds.contains(cat.id);
-                    return DropdownMenuItem<int?>(
-                      value: cat.id,
-                      child: Row(
-                        children: [
-                          if (locked) ...[
-                            const Icon(Icons.lock_outline,
-                                color: Colors.amber, size: 15),
-                            const SizedBox(width: 8),
-                          ],
-                          Expanded(
-                            child: Text(cat.name,
-                                maxLines: 1, overflow: TextOverflow.ellipsis),
-                          ),
-                        ],
-                      ),
-                    );
-                  }),
-                ],
-                onChanged: (id) {
-                  if (id == null) {
-                    onSelected(null);
-                  } else {
-                    final category =
-                        categories.firstWhere((cat) => cat.id == id);
-                    onSelected(category);
-                  }
-                },
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _ChannelList extends ConsumerWidget {
   final List<ContentItemsTableData> channels;
   final bool isTv;
@@ -746,8 +957,9 @@ class _ChannelList extends ConsumerWidget {
     }
 
     return ListView.separated(
+      padding: const EdgeInsets.only(bottom: 96),
       itemCount: channels.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, index) =>
           _ChannelCard(channel: channels[index], db: db),
     );
@@ -796,53 +1008,19 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
       ref
           .read(playerControllerProvider.notifier)
           .playItem(item, startFullscreen: true);
+    } else {
+      _openPreview();
     }
   }
 
   Future<void> _fetchEpg() async {
     final epgId = widget.channel.epgChannelId;
-    if (epgId != null && epgId.isNotEmpty) {
-      try {
-        final programs =
-            await widget.db.getCurrentAndNextPrograms(epgId, DateTime.now());
-        if (programs.isNotEmpty && mounted) {
-          setState(() => _nowPlayingTitle = programs.first.title);
-          return;
-        }
-      } catch (_) {}
-    }
-
-    // Xtream short EPG fallback
+    if (epgId == null || epgId.isEmpty) return;
     try {
-      final playlist = await widget.db.getPlaylist(widget.channel.playlistId);
-      if (playlist != null &&
-          playlist.type == 'xtream' &&
-          playlist.serverUrl != null &&
-          playlist.username != null) {
-        final storage = ref.read(secureStorageProvider);
-        final pass =
-            await storage.getPlaylistCredentials(widget.channel.playlistId);
-        if (pass != null) {
-          final creds = XtreamCredentials(
-              serverUrl: playlist.serverUrl!,
-              username: playlist.username!,
-              password: pass);
-          final client = XtreamClient(ref.read(apiClientProvider).dio);
-          final shortEpg = await client
-              .getShortEpg(creds, widget.channel.providerId, limit: 1);
-          if (shortEpg.isNotEmpty && mounted) {
-            final rawTitle = shortEpg.first['title']?.toString();
-            if (rawTitle != null && rawTitle.isNotEmpty) {
-              String title = rawTitle;
-              try {
-                if (!rawTitle.contains(' ') && rawTitle.length % 4 == 0) {
-                  title = utf8.decode(base64.decode(rawTitle));
-                }
-              } catch (_) {}
-              setState(() => _nowPlayingTitle = title);
-            }
-          }
-        }
+      final programs =
+          await widget.db.getCurrentAndNextPrograms(epgId, DateTime.now());
+      if (programs.isNotEmpty && mounted) {
+        setState(() => _nowPlayingTitle = programs.first.title);
       }
     } catch (_) {}
   }
@@ -851,6 +1029,7 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
   Widget build(BuildContext context) {
     final ch = widget.channel;
     final isActive = _isHovered || _isFocused;
+    final isMobile = MediaQuery.sizeOf(context).width < 768;
 
     return FocusableActionDetector(
       onFocusChange: (f) => setState(() => _isFocused = f),
@@ -860,102 +1039,90 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
           onInvoke: (_) => _openPreview(),
         ),
       },
-      child: GestureDetector(
-        onTap: _openPreview,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          transform: Matrix4.diagonal3Values(
-            _isFocused ? 1.02 : 1.0,
-            _isFocused ? 1.02 : 1.0,
-            1.0,
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          decoration: BoxDecoration(
-            color: isActive ? AppColors.surfaceElevated : AppColors.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: _isFocused
-                  ? Colors.white
-                  : (_isHovered
-                      ? AppColors.primary.withValues(alpha: 0.6)
-                      : Colors.white.withValues(alpha: 0.06)),
-              width: _isFocused ? 2 : 1,
+      child: Material(
+        color: isActive ? AppColors.surfaceElevated : AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: isMobile ? _playChannel : _openPreview,
+          onLongPress: _openPreview,
+          splashColor: AppColors.primary.withValues(alpha: 0.16),
+          child: Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: isMobile ? 12 : 16,
+              vertical: isMobile ? 10 : 12,
             ),
-            boxShadow: _isFocused
-                ? [
-                    BoxShadow(
-                      color: AppColors.primary.withValues(alpha: 0.4),
-                      blurRadius: 16,
-                      spreadRadius: 1,
-                    )
-                  ]
-                : null,
-          ),
-          child: Row(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _isFocused
+                    ? Colors.white
+                    : (_isHovered
+                        ? AppColors.primary.withValues(alpha: 0.6)
+                        : Colors.white.withValues(alpha: 0.06)),
+                width: _isFocused ? 2 : 1,
+              ),
+            ),
+            child: Row(
             children: [
               // Channel Logo
               _ChannelLogo(logoUrl: ch.posterUrl),
-              const SizedBox(width: 16),
+              SizedBox(width: isMobile ? 12 : 16),
 
               // Channel Info
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      ch.title,
-                      style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            ch.title,
+                            style: TextStyle(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                              fontSize: isMobile ? 14 : 15,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 3),
-                    if (_nowPlayingTitle != null)
-                      Text(
-                        '▶  $_nowPlayingTitle',
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 12,
+                    Row(
+                      children: [
+                        Container(
+                          width: 6,
+                          height: 6,
+                          decoration: const BoxDecoration(
+                            color: AppColors.primary,
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      )
-                    else
-                      const Text(
-                        'Live Stream',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 12,
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            _nowPlayingTitle ?? 'LIVE',
+                            style: TextStyle(
+                              color: _nowPlayingTitle != null
+                                  ? AppColors.textSecondary
+                                  : AppColors.primary,
+                              fontSize: 11.5,
+                              fontWeight: _nowPlayingTitle != null
+                                  ? FontWeight.w500
+                                  : FontWeight.w700,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
+                      ],
+                    ),
                   ],
                 ),
               ),
-
-              // LIVE Badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: AppColors.primary.withValues(alpha: 0.5)),
-                ),
-                child: const Text(
-                  'LIVE',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 10,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-              ),
-
-              const SizedBox(width: 8),
 
               // EPG & Catchup Button
               if ((ch.epgChannelId != null && ch.epgChannelId!.isNotEmpty) ||
@@ -968,6 +1135,7 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
                     color: ch.tvArchive > 0 ? Colors.amber : Colors.white60,
                     size: 20,
                   ),
+                  visualDensity: VisualDensity.compact,
                   tooltip: ch.tvArchive > 0
                       ? 'Programme Guide & Catchup'
                       : 'Programme Guide',
@@ -985,14 +1153,6 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
                   },
                 ),
 
-              // Direct Play Button
-              IconButton(
-                icon: const Icon(Icons.play_circle_fill_rounded,
-                    color: Colors.white70, size: 24),
-                tooltip: 'Watch Now',
-                onPressed: _playChannel,
-              ),
-
               // Favorite Button
               StreamBuilder<bool>(
                 stream: widget.db
@@ -1004,11 +1164,12 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
                       isFav
                           ? Icons.bookmark_added_rounded
                           : Icons.bookmark_add_outlined,
-                      color: isFav ? AppColors.primary : Colors.white60,
+                      color: isFav ? AppColors.primary : Colors.white54,
                       size: 20,
                     ),
+                    visualDensity: VisualDensity.compact,
                     tooltip: isFav
-                        ? 'In My List (Click to remove)'
+                        ? 'In My List (Tap to remove)'
                         : 'Add to My List',
                     onPressed: () async {
                       final messenger = ScaffoldMessenger.of(context);
@@ -1037,14 +1198,22 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
                 },
               ),
 
-              const SizedBox(width: 4),
-              Icon(
-                Icons.play_circle_outline_rounded,
-                color: isActive ? AppColors.primary : Colors.white54,
-                size: 26,
+              // Info / Preview Button
+              IconButton(
+                icon: Icon(
+                  isMobile
+                      ? Icons.info_outline_rounded
+                      : Icons.play_circle_fill_rounded,
+                  color: Colors.white70,
+                  size: isMobile ? 20 : 26,
+                ),
+                visualDensity: VisualDensity.compact,
+                tooltip: isMobile ? 'Channel Info & EPG' : 'Watch Now',
+                onPressed: isMobile ? _openPreview : _playChannel,
               ),
             ],
           ),
+        ),
         ),
       ),
     );

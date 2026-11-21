@@ -1,15 +1,20 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+import 'package:media_kit/media_kit.dart' show SubtitleTrack;
+import '../../../core/persistence/app_database.dart';
+import '../../../core/persistence/database_provider.dart';
 import '../../../shared/models/media_item.dart';
 import '../../../core/theme/app_colors.dart';
+import '../data/libvlc_bridge.dart';
 import '../data/player_controller.dart';
 import '../data/stream_recording_service.dart';
 import '../data/external_player_service.dart';
 import '../domain/playback_enums.dart';
 import 'widgets/diagnostics_panel.dart';
+import 'widgets/engine_video_surface.dart';
 import 'widgets/playback_speed_sheet.dart';
 import 'widgets/auto_play_next_overlay.dart';
 
@@ -51,32 +56,114 @@ class FullscreenPlayerView extends ConsumerStatefulWidget {
 
 class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
   bool _showControls = true;
-  DateTime _lastInteraction = DateTime.now();
   bool _showDiagnostics = false;
+  bool _showChannelDrawer = false;
   _VideoAspectPreset _aspectPreset = _VideoAspectPreset.original;
   double _videoScale = 1;
+  double _brightness = 1.0;
+  bool _isLandscapeLocked = false;
+  Timer? _autoHideTimer;
+  Timer? _hudTimer;
+  String? _gestureHudText;
+  IconData? _gestureHudIcon;
 
-  void _onUserInteraction() {
-    setState(() {
-      _showControls = true;
-      _lastInteraction = DateTime.now();
-    });
+  bool get _isMobilePlatform =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isMobilePlatform) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     _scheduleAutoHide();
   }
 
+  @override
+  void dispose() {
+    _autoHideTimer?.cancel();
+    _hudTimer?.cancel();
+    if (_isMobilePlatform) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setPreferredOrientations(const []);
+    }
+    super.dispose();
+  }
+
+  void _onUserInteraction() {
+    if (!_showControls) {
+      setState(() => _showControls = true);
+    }
+    _scheduleAutoHide();
+  }
+
+  void _toggleControls() {
+    setState(() => _showControls = !_showControls);
+    if (_showControls) {
+      _scheduleAutoHide();
+    } else {
+      _autoHideTimer?.cancel();
+    }
+  }
+
   void _scheduleAutoHide() {
-    Future.delayed(const Duration(seconds: 4), () {
-      if (mounted &&
-          DateTime.now().difference(_lastInteraction).inSeconds >= 4) {
+    _autoHideTimer?.cancel();
+    _autoHideTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _showControls) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  void _showGestureHud(IconData icon, String text) {
+    _hudTimer?.cancel();
+    setState(() {
+      _gestureHudIcon = icon;
+      _gestureHudText = text;
+    });
+    _hudTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) {
         setState(() {
-          _showControls = false;
+          _gestureHudIcon = null;
+          _gestureHudText = null;
         });
       }
     });
   }
 
+  Future<void> _toggleOrientation() async {
+    if (!_isMobilePlatform) return;
+    final nextLandscape = !_isLandscapeLocked;
+    setState(() => _isLandscapeLocked = nextLandscape);
+    if (nextLandscape) {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      await SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+      ]);
+      // Release lock shortly after so auto-rotate still works
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted && !_isLandscapeLocked) {
+          SystemChrome.setPreferredOrientations(const []);
+        }
+      });
+    }
+    _onUserInteraction();
+  }
+
   void _selectAspectRatio(_VideoAspectPreset preset) {
     setState(() => _aspectPreset = preset);
+    ref.read(playerControllerProvider.notifier).setAspectRatio(
+          preset == _VideoAspectPreset.original ||
+                  preset == _VideoAspectPreset.fillScreen
+              ? ''
+              : preset.label,
+        );
     _onUserInteraction();
   }
 
@@ -159,9 +246,63 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     final playerState = ref.read(playerControllerProvider);
 
     switch (event.logicalKey) {
+      case LogicalKeyboardKey.select:
+      case LogicalKeyboardKey.enter:
+        if (_showChannelDrawer) return KeyEventResult.ignored;
+        if (!_showControls) {
+          _onUserInteraction();
+        } else {
+          controller.togglePlayPause();
+          _onUserInteraction();
+        }
+        return KeyEventResult.handled;
       case LogicalKeyboardKey.space:
+      case LogicalKeyboardKey.mediaPlayPause:
         controller.togglePlayPause();
         _onUserInteraction();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.mediaPlay:
+        if (!playerState.isPlaying) controller.togglePlayPause();
+        _onUserInteraction();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.mediaPause:
+        if (playerState.isPlaying) controller.togglePlayPause();
+        _onUserInteraction();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.mediaRewind:
+        final target = playerState.position - const Duration(seconds: 30);
+        controller.seek(target < Duration.zero ? Duration.zero : target);
+        _showGestureHud(Icons.fast_rewind_rounded, '-30s');
+        _onUserInteraction();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.mediaFastForward:
+        final target = playerState.position + const Duration(seconds: 30);
+        controller.seek(target);
+        _showGestureHud(Icons.fast_forward_rounded, '+30s');
+        _onUserInteraction();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.keyC:
+      case LogicalKeyboardKey.contextMenu:
+        if (playerState.currentItem?.type == MediaType.live) {
+          setState(() => _showChannelDrawer = !_showChannelDrawer);
+          _onUserInteraction();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      case LogicalKeyboardKey.keyL:
+        if (playerState.currentItem?.type == MediaType.live) {
+          controller.playPreviousWatchedChannel();
+          _onUserInteraction();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      case LogicalKeyboardKey.escape:
+      case LogicalKeyboardKey.goBack:
+        if (_showChannelDrawer) {
+          setState(() => _showChannelDrawer = false);
+          return KeyEventResult.handled;
+        }
+        controller.closePlayer();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowLeft:
         final target = playerState.position - const Duration(seconds: 10);
@@ -224,13 +365,24 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     final item = playerState.currentItem;
 
     if (item == null) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: Text('No media loaded')),
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) controller.closePlayer();
+        },
+        child: const Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(child: Text('No media loaded')),
+        ),
       );
     }
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) controller.closePlayer();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
         autofocus: true,
@@ -238,7 +390,43 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
         child: MouseRegion(
           onHover: (_) => _onUserInteraction(),
           child: GestureDetector(
-            onTap: () => _onUserInteraction(),
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleControls,
+            onDoubleTapDown: (details) {
+              if (item.type == MediaType.live) return;
+              final width = MediaQuery.sizeOf(context).width;
+              final isLeft = details.localPosition.dx < width / 2;
+              final delta = isLeft
+                  ? const Duration(seconds: -10)
+                  : const Duration(seconds: 10);
+              final target = playerState.position + delta;
+              controller.seek(target < Duration.zero ? Duration.zero : target);
+              _showGestureHud(
+                isLeft ? Icons.replay_10_rounded : Icons.forward_10_rounded,
+                isLeft ? '-10s' : '+10s',
+              );
+            },
+            onVerticalDragUpdate: (details) {
+              if (!_isMobilePlatform) return;
+              final width = MediaQuery.sizeOf(context).width;
+              final isLeft = details.localPosition.dx < width / 2;
+              final delta = -details.delta.dy / 220.0;
+              if (isLeft) {
+                final next = (_brightness + delta).clamp(0.25, 1.0);
+                setState(() => _brightness = next);
+                _showGestureHud(
+                  Icons.brightness_6_rounded,
+                  '${(next * 100).round()}%',
+                );
+              } else {
+                final next = (playerState.volume + delta * 100).clamp(0.0, 100.0);
+                controller.setVolume(next);
+                _showGestureHud(
+                  next <= 0 ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                  '${next.round()}%',
+                );
+              }
+            },
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -247,15 +435,53 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                   child: ClipRect(
                     child: Transform.scale(
                       scale: _videoScale,
-                      child: Video(
-                        controller: controller.videoController,
+                      child: EngineVideoSurface(
                         fit: _aspectPreset.fit,
                         aspectRatio: _aspectPreset.aspectRatio,
-                        controls: NoVideoControls,
                       ),
                     ),
                   ),
                 ),
+
+                // --- Software Brightness Dimmer Overlay ---
+                if (_brightness < 0.99)
+                  IgnorePointer(
+                    child: Container(
+                      color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.75)),
+                    ),
+                  ),
+
+                // --- Gesture Feedback HUD ---
+                if (_gestureHudText != null && _gestureHudIcon != null)
+                  IgnorePointer(
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(_gestureHudIcon, color: Colors.white, size: 22),
+                            const SizedBox(width: 8),
+                            Text(
+                              _gestureHudText!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
 
                 // --- Buffering Indicator ---
                 if (playerState.isBuffering && playerState.errorMessage == null)
@@ -362,6 +588,37 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                     child: PlaybackDiagnosticsPanel(),
                   ),
 
+                // --- In-Player Live Channel Overlay Drawer (Switch channels without stopping playback) ---
+                if (_showChannelDrawer && item.type == MediaType.live)
+                  Positioned(
+                    top: 0,
+                    bottom: 0,
+                    right: 0,
+                    width: (MediaQuery.sizeOf(context).width * 0.78)
+                        .clamp(260.0, 340.0),
+                    child: _LiveChannelOverlayDrawer(
+                      currentChannel: item,
+                      onClose: () => setState(() => _showChannelDrawer = false),
+                      onSelectChannel: (ch) {
+                        if (ch.streamUrl != null && ch.streamUrl!.isNotEmpty) {
+                          controller.switchStream(
+                            MediaItem(
+                              id: ch.providerId,
+                              title: ch.title,
+                              type: MediaType.live,
+                              posterUrl: ch.posterUrl,
+                              streamUrl: ch.streamUrl,
+                              playlistId: ch.playlistId,
+                              providerId: ch.providerId,
+                              contentDbId: ch.id,
+                            ),
+                          );
+                        }
+                        setState(() => _showChannelDrawer = false);
+                      },
+                    ),
+                  ),
+
                 // --- Auto-Play Next Episode Overlay ---
                 if (playerState.nextEpisodeItem != null &&
                     playerState.autoPlayEnabled &&
@@ -370,10 +627,12 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                       nextEpisode: playerState.nextEpisodeItem!),
 
                 // --- Auto-Hiding Controls Overlay ---
-                AnimatedOpacity(
-                  opacity: _showControls ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 250),
-                  child: Container(
+                IgnorePointer(
+                  ignoring: !_showControls,
+                  child: AnimatedOpacity(
+                    opacity: _showControls ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 220),
+                    child: Container(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
@@ -390,11 +649,11 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          // --- Top Header ---
+                          // --- Top Header (Clean 1-line title + Minimize + More) ---
                           Padding(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 16,
+                              horizontal: 12,
+                              vertical: 8,
                             ),
                             child: Row(
                               children: [
@@ -402,217 +661,168 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                                   icon: const Icon(
                                     Icons.arrow_back_rounded,
                                     color: Colors.white,
-                                    size: 26,
+                                    size: 24,
                                   ),
                                   tooltip: 'Close player',
                                   onPressed: controller.closePlayer,
                                 ),
-                                const SizedBox(width: 16),
+                                const SizedBox(width: 4),
                                 Expanded(
                                   child: Column(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Text(
                                         item.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
                                           color: Colors.white,
-                                          fontSize: 18,
+                                          fontSize: 15.5,
                                           fontWeight: FontWeight.w700,
+                                          letterSpacing: -0.2,
                                         ),
                                       ),
-                                      if (item.subtitle != null)
+                                      if (item.subtitle != null &&
+                                          item.subtitle!.isNotEmpty)
                                         Text(
                                           item.subtitle!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             color: Colors.white
-                                                .withValues(alpha: 0.65),
-                                            fontSize: 13,
+                                                .withValues(alpha: 0.7),
+                                            fontSize: 12,
                                           ),
                                         ),
                                     ],
                                   ),
                                 ),
-                                // Speed button
+                                const SizedBox(width: 4),
                                 IconButton(
                                   icon: const Icon(
-                                    Icons.speed_rounded,
+                                    Icons.picture_in_picture_alt_rounded,
                                     color: Colors.white,
+                                    size: 21,
                                   ),
-                                  tooltip: 'Playback Speed',
-                                  onPressed: () =>
-                                      PlaybackSpeedSheet.show(context),
+                                  tooltip: 'Minimize to floating video',
+                                  onPressed: controller.minimizePlayer,
                                 ),
                                 IconButton(
-                                  tooltip: 'Video size and aspect ratio',
                                   icon: const Icon(
-                                    Icons.aspect_ratio_rounded,
+                                    Icons.more_vert_rounded,
                                     color: Colors.white,
+                                    size: 22,
                                   ),
-                                  onPressed: _showVideoSizingSheet,
-                                ),
-                                // Diagnostics button
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.info_outline_rounded,
-                                    color: _showDiagnostics
-                                        ? AppColors.primary
-                                        : Colors.white,
-                                  ),
-                                  tooltip: 'Playback Diagnostics',
-                                  onPressed: () => setState(
-                                    () => _showDiagnostics = !_showDiagnostics,
+                                  tooltip: 'Player options',
+                                  onPressed: () => _showPlayerOptionsSheet(
+                                    context,
+                                    playerState,
+                                    controller,
                                   ),
                                 ),
                               ],
                             ),
                           ),
 
-                          // --- Center Controls (Play/Pause + Live Zapping / Seek) ---
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (item.type == MediaType.live)
-                                IconButton(
-                                  iconSize: 38,
-                                  icon: const Icon(Icons.skip_previous_rounded,
-                                      color: Colors.white),
-                                  tooltip: 'Previous Channel (PageUp)',
-                                  onPressed: () =>
-                                      controller.playPreviousChannel(),
-                                )
-                              else
-                                IconButton(
-                                  iconSize: 34,
-                                  icon: const Icon(Icons.replay_10_rounded,
-                                      color: Colors.white),
-                                  tooltip: 'Rewind 10s',
-                                  onPressed: () {
-                                    final target = playerState.position -
-                                        const Duration(seconds: 10);
-                                    controller.seek(target < Duration.zero
-                                        ? Duration.zero
-                                        : target);
-                                  },
-                                ),
-                              const SizedBox(width: 20),
-                              GestureDetector(
-                                onTap: () => controller.togglePlayPause(),
-                                child: Container(
-                                  width: 68,
-                                  height: 68,
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.5),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: Colors.white24,
-                                      width: 1.5,
+                          // --- Center Controls (Hidden while buffering so spinner is clean) ---
+                          if (!playerState.isBuffering ||
+                              playerState.errorMessage != null)
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                if (item.type == MediaType.live)
+                                  IconButton(
+                                    iconSize: 34,
+                                    icon: const Icon(
+                                        Icons.skip_previous_rounded,
+                                        color: Colors.white),
+                                    tooltip: 'Previous Channel',
+                                    onPressed: controller.playPreviousChannel,
+                                  )
+                                else
+                                  IconButton(
+                                    iconSize: 34,
+                                    icon: const Icon(Icons.replay_10_rounded,
+                                        color: Colors.white),
+                                    tooltip: 'Rewind 10s',
+                                    onPressed: () {
+                                      final target = playerState.position -
+                                          const Duration(seconds: 10);
+                                      controller.seek(target < Duration.zero
+                                          ? Duration.zero
+                                          : target);
+                                    },
+                                  ),
+                                const SizedBox(width: 28),
+                                GestureDetector(
+                                  onTap: controller.togglePlayPause,
+                                  child: Container(
+                                    width: 64,
+                                    height: 64,
+                                    decoration: BoxDecoration(
+                                      color:
+                                          Colors.black.withValues(alpha: 0.52),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white30,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      playerState.isPlaying
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded,
+                                      color: Colors.white,
+                                      size: 38,
                                     ),
                                   ),
-                                  child: Icon(
-                                    playerState.isPlaying
-                                        ? Icons.pause_rounded
-                                        : Icons.play_arrow_rounded,
-                                    color: Colors.white,
-                                    size: 40,
+                                ),
+                                const SizedBox(width: 28),
+                                if (item.type == MediaType.live)
+                                  IconButton(
+                                    iconSize: 34,
+                                    icon: const Icon(Icons.skip_next_rounded,
+                                        color: Colors.white),
+                                    tooltip: 'Next Channel',
+                                    onPressed: controller.playNextChannel,
+                                  )
+                                else
+                                  IconButton(
+                                    iconSize: 34,
+                                    icon: const Icon(Icons.forward_10_rounded,
+                                        color: Colors.white),
+                                    tooltip: 'Forward 10s',
+                                    onPressed: () {
+                                      final target = playerState.position +
+                                          const Duration(seconds: 10);
+                                      controller.seek(target);
+                                    },
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 20),
-                              if (item.type == MediaType.live)
-                                IconButton(
-                                  iconSize: 38,
-                                  icon: const Icon(Icons.skip_next_rounded,
-                                      color: Colors.white),
-                                  tooltip: 'Next Channel (PageDown)',
-                                  onPressed: () => controller.playNextChannel(),
-                                )
-                              else
-                                IconButton(
-                                  iconSize: 34,
-                                  icon: const Icon(Icons.forward_10_rounded,
-                                      color: Colors.white),
-                                  tooltip: 'Forward 10s',
-                                  onPressed: () {
-                                    final target = playerState.position +
-                                        const Duration(seconds: 10);
-                                    controller.seek(target);
-                                  },
-                                ),
-                            ],
-                          ),
+                              ],
+                            )
+                          else
+                            const SizedBox.shrink(),
 
-                          // --- Bottom Controls ---
+                          // --- Bottom Controls (Minimal, well-aligned) ---
                           Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 20,
-                            ),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                // Progress Slider or Live Badge
-                                if (item.type == MediaType.live)
-                                  Padding(
-                                    padding:
-                                        const EdgeInsets.symmetric(vertical: 8),
-                                    child: Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 10, vertical: 4),
-                                          decoration: BoxDecoration(
-                                            color: Colors.redAccent
-                                                .withValues(alpha: 0.25),
-                                            borderRadius:
-                                                BorderRadius.circular(6),
-                                            border: Border.all(
-                                                color: Colors.redAccent,
-                                                width: 1),
-                                          ),
-                                          child: const Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(Icons.circle,
-                                                  color: Colors.redAccent,
-                                                  size: 8),
-                                              SizedBox(width: 6),
-                                              Text(
-                                                'LIVE',
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 11,
-                                                  fontWeight: FontWeight.bold,
-                                                  letterSpacing: 0.8,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Text(
-                                            item.title,
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  )
-                                else
+                                if (item.type != MediaType.live)
                                   SliderTheme(
                                     data: SliderTheme.of(context).copyWith(
                                       activeTrackColor: AppColors.primary,
                                       inactiveTrackColor: Colors.white24,
-                                      thumbColor: Colors.white,
+                                      thumbColor: AppColors.primary,
                                       thumbShape: const RoundSliderThumbShape(
                                         enabledThumbRadius: 6,
+                                      ),
+                                      overlayShape:
+                                          const RoundSliderOverlayShape(
+                                        overlayRadius: 14,
                                       ),
                                       trackHeight: 3,
                                     ),
@@ -634,296 +844,162 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                                       },
                                     ),
                                   ),
-
                                 Row(
                                   children: [
-                                    Text(
-                                      item.type == MediaType.live
-                                          ? (playerState.position >
-                                                  Duration.zero
-                                              ? 'Live • ${_format(playerState.position)}'
-                                              : 'Live Stream')
-                                          : '${_format(playerState.position)} / ${_format(playerState.duration)}',
-                                      style: TextStyle(
-                                        color:
-                                            Colors.white.withValues(alpha: 0.8),
-                                        fontSize: 13,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    Flexible(
-                                      child: SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        child: Row(
+                                    if (item.type == MediaType.live) ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary
+                                              .withValues(alpha: 0.25),
+                                          borderRadius:
+                                              BorderRadius.circular(5),
+                                          border: Border.all(
+                                            color: AppColors.primary,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: const Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            // DVR Live Stream Recording
-                                            Consumer(
-                                              builder: (context, ref, _) {
-                                                final recState = ref.watch(
-                                                    streamRecordingProvider);
-                                                final streamUrl = playerState
-                                                    .currentItem?.streamUrl;
-
-                                                if (recState.isRecording) {
-                                                  return InkWell(
-                                                    onTap: () => ref
-                                                        .read(
-                                                            streamRecordingProvider
-                                                                .notifier)
-                                                        .stopRecording(),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                            20),
-                                                    child: Container(
-                                                      padding: const EdgeInsets
-                                                          .symmetric(
-                                                        horizontal: 10,
-                                                        vertical: 4,
-                                                      ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.redAccent
-                                                            .withValues(
-                                                                alpha: 0.25),
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(20),
-                                                        border: Border.all(
-                                                          color:
-                                                              Colors.redAccent,
-                                                        ),
-                                                      ),
-                                                      child: Row(
-                                                        mainAxisSize:
-                                                            MainAxisSize.min,
-                                                        children: [
-                                                          const Icon(
-                                                            Icons.stop_rounded,
-                                                            color: Colors
-                                                                .redAccent,
-                                                            size: 16,
-                                                          ),
-                                                          const SizedBox(
-                                                              width: 4),
-                                                          Text(
-                                                            'REC ${recState.formattedDuration} (${recState.formattedSize})',
-                                                            style:
-                                                                const TextStyle(
-                                                              color:
-                                                                  Colors.white,
-                                                              fontSize: 11,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .bold,
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-
-                                                if (streamUrl != null &&
-                                                    streamUrl.isNotEmpty) {
-                                                  return IconButton(
-                                                    icon: const Icon(
-                                                      Icons
-                                                          .fiber_manual_record_rounded,
-                                                      color: Colors.redAccent,
-                                                    ),
-                                                    tooltip:
-                                                        'Record Stream (DVR)',
-                                                    onPressed: () {
-                                                      final title = playerState
-                                                              .currentItem
-                                                              ?.title ??
-                                                          'Stream';
-                                                      ref
-                                                          .read(
-                                                              streamRecordingProvider
-                                                                  .notifier)
-                                                          .startRecording(
-                                                              streamUrl, title);
-                                                      ScaffoldMessenger.of(
-                                                              context)
-                                                          .showSnackBar(
-                                                        SnackBar(
-                                                          content: Text(
-                                                            'Started recording "$title" to Documents/Recordings',
-                                                          ),
-                                                          backgroundColor:
-                                                              Colors.redAccent,
-                                                        ),
-                                                      );
-                                                    },
-                                                  );
-                                                }
-                                                return const SizedBox.shrink();
-                                              },
-                                            ),
-
-                                            // External Player Launcher
-                                            PopupMenuButton<String>(
-                                              icon: const Icon(
-                                                Icons.open_in_new_rounded,
-                                                color: Colors.white70,
-                                              ),
-                                              tooltip:
-                                                  'Open in External Player',
-                                              color: const Color(0xFF1E1E24),
-                                              onSelected: (val) async {
-                                                final streamUrl = playerState
-                                                    .currentItem?.streamUrl;
-                                                if (streamUrl == null) return;
-                                                if (val == 'vlc') {
-                                                  final ok =
-                                                      await ExternalPlayerService
-                                                          .openInVlc(streamUrl);
-                                                  if (!ok && context.mounted) {
-                                                    ScaffoldMessenger.of(
-                                                            context)
-                                                        .showSnackBar(
-                                                      const SnackBar(
-                                                        content: Text(
-                                                          'Could not launch VLC. Is VLC installed?',
-                                                        ),
-                                                      ),
-                                                    );
-                                                  }
-                                                } else if (val == 'mpv') {
-                                                  final ok =
-                                                      await ExternalPlayerService
-                                                          .openInMpv(streamUrl);
-                                                  if (!ok && context.mounted) {
-                                                    ScaffoldMessenger.of(
-                                                            context)
-                                                        .showSnackBar(
-                                                      const SnackBar(
-                                                        content: Text(
-                                                          'Could not launch MPV standalone.',
-                                                        ),
-                                                      ),
-                                                    );
-                                                  }
-                                                }
-                                              },
-                                              itemBuilder: (ctx) => [
-                                                const PopupMenuItem(
-                                                  value: 'vlc',
-                                                  child: Row(
-                                                    children: [
-                                                      Icon(
-                                                        Icons
-                                                            .play_circle_outline,
-                                                        color: Colors.orange,
-                                                        size: 18,
-                                                      ),
-                                                      SizedBox(width: 8),
-                                                      Text(
-                                                        'Open in VLC Player',
-                                                        style: TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 13,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                                const PopupMenuItem(
-                                                  value: 'mpv',
-                                                  child: Row(
-                                                    children: [
-                                                      Icon(
-                                                        Icons
-                                                            .movie_filter_outlined,
-                                                        color:
-                                                            Colors.purpleAccent,
-                                                        size: 18,
-                                                      ),
-                                                      SizedBox(width: 8),
-                                                      Text(
-                                                        'Open in MPV Standalone',
-                                                        style: TextStyle(
-                                                          color: Colors.white,
-                                                          fontSize: 13,
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.audiotrack_rounded,
+                                            Icon(Icons.circle,
+                                                color: AppColors.primary,
+                                                size: 7),
+                                            SizedBox(width: 5),
+                                            Text(
+                                              'LIVE',
+                                              style: TextStyle(
                                                 color: Colors.white,
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w800,
+                                                letterSpacing: 0.8,
                                               ),
-                                              tooltip: 'Audio Track',
-                                              onPressed: () =>
-                                                  _showAudioTrackDialog(
-                                                context,
-                                                controller,
-                                              ),
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.subtitles_rounded,
-                                                color: Colors.white,
-                                              ),
-                                              tooltip: 'Subtitles',
-                                              onPressed: () =>
-                                                  _showSubtitleTrackDialog(
-                                                context,
-                                                controller,
-                                              ),
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.replay_10_rounded,
-                                                color: Colors.white,
-                                              ),
-                                              onPressed: () {
-                                                final target = playerState
-                                                        .position -
-                                                    const Duration(seconds: 10);
-                                                controller.seek(
-                                                    target < Duration.zero
-                                                        ? Duration.zero
-                                                        : target);
-                                              },
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.forward_10_rounded,
-                                                color: Colors.white,
-                                              ),
-                                              onPressed: () {
-                                                final target = playerState
-                                                        .position +
-                                                    const Duration(seconds: 10);
-                                                controller.seek(target);
-                                              },
-                                            ),
-                                            IconButton(
-                                              icon: Icon(
-                                                playerState.volume > 0
-                                                    ? Icons.volume_up_rounded
-                                                    : Icons.volume_off_rounded,
-                                                color: Colors.white,
-                                              ),
-                                              onPressed: () {
-                                                controller.setVolume(
-                                                  playerState.volume > 0
-                                                      ? 0.0
-                                                      : 100.0,
-                                                );
-                                              },
                                             ),
                                           ],
                                         ),
                                       ),
+                                      if (playerState.position >
+                                          Duration.zero) ...[
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          _format(playerState.position),
+                                          style: TextStyle(
+                                            color: Colors.white
+                                                .withValues(alpha: 0.75),
+                                            fontSize: 12.5,
+                                            fontFamily: 'monospace',
+                                          ),
+                                        ),
+                                      ],
+                                    ] else
+                                      Text(
+                                        '${_format(playerState.position)} / ${_format(playerState.duration)}',
+                                        style: TextStyle(
+                                          color: Colors.white
+                                              .withValues(alpha: 0.85),
+                                          fontSize: 12.5,
+                                          fontFamily: 'monospace',
+                                        ),
+                                      ),
+                                    const Spacer(),
+                                    if (playerState.nextEpisodeItem != null)
+                                      TextButton.icon(
+                                        onPressed: () => controller.playItem(
+                                          playerState.nextEpisodeItem!,
+                                          startFullscreen: true,
+                                        ),
+                                        icon: const Icon(
+                                          Icons.skip_next_rounded,
+                                          color: Colors.white,
+                                          size: 18,
+                                        ),
+                                        label: const Text(
+                                          'Next',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    if (item.type == MediaType.live)
+                                      IconButton(
+                                        icon: Icon(
+                                          Icons.list_rounded,
+                                          color: _showChannelDrawer
+                                              ? AppColors.primary
+                                              : Colors.white,
+                                          size: 22,
+                                        ),
+                                        tooltip: 'Channels',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () {
+                                          setState(() => _showChannelDrawer =
+                                              !_showChannelDrawer);
+                                          _onUserInteraction();
+                                        },
+                                      ),
+                                    if (item.type != MediaType.live)
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.subtitles_outlined,
+                                          color: Colors.white,
+                                          size: 21,
+                                        ),
+                                        tooltip: 'Subtitles',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: () =>
+                                            _showSubtitleTrackDialog(
+                                          context,
+                                          controller,
+                                        ),
+                                      ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.audiotrack_rounded,
+                                        color: Colors.white,
+                                        size: 21,
+                                      ),
+                                      tooltip: 'Audio Track',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => _showAudioTrackDialog(
+                                        context,
+                                        controller,
+                                      ),
                                     ),
+                                    IconButton(
+                                      icon: Icon(
+                                        playerState.volume > 0
+                                            ? Icons.volume_up_rounded
+                                            : Icons.volume_off_rounded,
+                                        color: Colors.white,
+                                        size: 21,
+                                      ),
+                                      tooltip: playerState.volume > 0
+                                          ? 'Mute'
+                                          : 'Unmute',
+                                      visualDensity: VisualDensity.compact,
+                                      onPressed: () => controller.setVolume(
+                                        playerState.volume > 0 ? 0.0 : 100.0,
+                                      ),
+                                    ),
+                                    if (_isMobilePlatform)
+                                      IconButton(
+                                        icon: Icon(
+                                          _isLandscapeLocked
+                                              ? Icons
+                                                  .screen_lock_landscape_rounded
+                                              : Icons.screen_rotation_rounded,
+                                          color: Colors.white,
+                                          size: 21,
+                                        ),
+                                        tooltip: 'Rotate Screen',
+                                        visualDensity: VisualDensity.compact,
+                                        onPressed: _toggleOrientation,
+                                      ),
                                   ],
                                 ),
                               ],
@@ -934,8 +1010,164 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                     ),
                   ),
                 ),
+                ),
               ],
             ),
+          ),
+        ),
+      ),
+    ),
+    );
+  }
+
+  void _showPlayerOptionsSheet(
+    BuildContext context,
+    PlayerState playerState,
+    PlayerController controller,
+  ) {
+    final item = playerState.currentItem;
+    if (item == null) return;
+    final recState = ref.read(streamRecordingProvider);
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF16161C),
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (item.type != MediaType.live)
+                ListTile(
+                  leading: const Icon(Icons.speed_rounded, color: Colors.white),
+                  title: const Text('Playback Speed',
+                      style: TextStyle(color: Colors.white, fontSize: 14)),
+                  trailing: Text(
+                    '${playerState.playbackRate}x',
+                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    PlaybackSpeedSheet.show(context);
+                  },
+                ),
+              ListTile(
+                leading:
+                    const Icon(Icons.aspect_ratio_rounded, color: Colors.white),
+                title: const Text('Aspect Ratio & Zoom',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+                trailing: Text(
+                  _aspectPreset.label,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _showVideoSizingSheet();
+                },
+              ),
+              if (LibVlcBridge.isSupported)
+                ListTile(
+                  leading: const Icon(Icons.settings_input_component_rounded,
+                      color: Colors.white),
+                  title: const Text('Playback Engine',
+                      style: TextStyle(color: Colors.white, fontSize: 14)),
+                  trailing: Text(
+                    playerState.playbackEngine.label,
+                    style: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    final next =
+                        playerState.playbackEngine == PlaybackEngine.libVlc
+                            ? PlaybackEngine.mediaKit
+                            : PlaybackEngine.libVlc;
+                    controller.setPlaybackEngine(next);
+                    _showGestureHud(
+                      Icons.settings_input_component_rounded,
+                      'Engine: ${next.shortLabel}',
+                    );
+                  },
+                ),
+              if (item.streamUrl != null && item.streamUrl!.isNotEmpty)
+                ListTile(
+                  leading: Icon(
+                    recState.isRecording
+                        ? Icons.stop_circle_rounded
+                        : Icons.fiber_manual_record_rounded,
+                    color: Colors.redAccent,
+                  ),
+                  title: Text(
+                    recState.isRecording
+                        ? 'Stop Recording (${recState.formattedDuration})'
+                        : 'Record Stream (DVR)',
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    if (recState.isRecording) {
+                      ref
+                          .read(streamRecordingProvider.notifier)
+                          .stopRecording();
+                    } else {
+                      ref
+                          .read(streamRecordingProvider.notifier)
+                          .startRecording(item.streamUrl!, item.title);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Started recording "${item.title}"'),
+                          backgroundColor: Colors.redAccent,
+                        ),
+                      );
+                    }
+                  },
+                ),
+              if (item.streamUrl != null && item.streamUrl!.isNotEmpty)
+                ListTile(
+                  leading:
+                      const Icon(Icons.open_in_new_rounded, color: Colors.white),
+                  title: const Text('Open in External Player (VLC)',
+                      style: TextStyle(color: Colors.white, fontSize: 14)),
+                  onTap: () async {
+                    Navigator.pop(sheetCtx);
+                    final ok =
+                        await ExternalPlayerService.openInVlc(item.streamUrl!);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content:
+                              Text('Could not launch VLC. Is VLC installed?'),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ListTile(
+                leading: Icon(
+                  Icons.info_outline_rounded,
+                  color: _showDiagnostics ? AppColors.primary : Colors.white,
+                ),
+                title: Text(
+                  _showDiagnostics
+                      ? 'Hide Stream Diagnostics'
+                      : 'Show Stream Diagnostics',
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  setState(() => _showDiagnostics = !_showDiagnostics);
+                },
+              ),
+            ],
           ),
         ),
       ),
@@ -946,6 +1178,52 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     BuildContext context,
     PlayerController controller,
   ) {
+    final playerState = ref.read(playerControllerProvider);
+    if (playerState.playbackEngine == PlaybackEngine.libVlc &&
+        LibVlcBridge.isSupported) {
+      final tracks = playerState.vlcAudioTracks;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E24),
+          title: const Text(
+            'Select Audio Track (LibVLC)',
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          content: tracks.isEmpty
+              ? const Text(
+                  'No alternative audio tracks found.',
+                  style: TextStyle(color: Colors.white70),
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: tracks.map((track) {
+                    final selected = track.id == playerState.activeVlcAudioTrack;
+                    return ListTile(
+                      title: Text(
+                        track.name,
+                        style: TextStyle(
+                          color: selected ? AppColors.primary : Colors.white,
+                          fontWeight:
+                              selected ? FontWeight.w700 : FontWeight.normal,
+                        ),
+                      ),
+                      trailing: selected
+                          ? const Icon(Icons.check_rounded,
+                              color: AppColors.primary, size: 18)
+                          : null,
+                      onTap: () {
+                        controller.setVlcAudioTrack(track.id);
+                        Navigator.pop(ctx);
+                      },
+                    );
+                  }).toList(),
+                ),
+        ),
+      );
+      return;
+    }
+
     final tracks = controller.player.state.tracks.audio;
     showDialog(
       context: context,
@@ -984,6 +1262,60 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     BuildContext context,
     PlayerController controller,
   ) {
+    final playerState = ref.read(playerControllerProvider);
+    if (playerState.playbackEngine == PlaybackEngine.libVlc &&
+        LibVlcBridge.isSupported) {
+      final tracks = playerState.vlcSubtitleTracks;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E24),
+          title: const Text(
+            'Select Subtitles (LibVLC)',
+            style: TextStyle(color: Colors.white, fontSize: 16),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: const Text(
+                  'Off (Disable Subtitles)',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                onTap: () {
+                  controller.setVlcSubtitleTrack(-1);
+                  Navigator.pop(ctx);
+                },
+              ),
+              ...tracks.map((track) {
+                final selected =
+                    track.id == playerState.activeVlcSubtitleTrack;
+                return ListTile(
+                  title: Text(
+                    track.name,
+                    style: TextStyle(
+                      color: selected ? AppColors.primary : Colors.white,
+                      fontWeight:
+                          selected ? FontWeight.w700 : FontWeight.normal,
+                    ),
+                  ),
+                  trailing: selected
+                      ? const Icon(Icons.check_rounded,
+                          color: AppColors.primary, size: 18)
+                      : null,
+                  onTap: () {
+                    controller.setVlcSubtitleTrack(track.id);
+                    Navigator.pop(ctx);
+                  },
+                );
+              }),
+            ],
+          ),
+        ),
+      );
+      return;
+    }
+
     final tracks = controller.player.state.tracks.subtitle;
     showDialog(
       context: context,
@@ -1031,5 +1363,114 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+}
+
+class _LiveChannelOverlayDrawer extends ConsumerWidget {
+  final MediaItem currentChannel;
+  final VoidCallback onClose;
+  final ValueChanged<ContentItemsTableData> onSelectChannel;
+
+  const _LiveChannelOverlayDrawer({
+    required this.currentChannel,
+    required this.onClose,
+    required this.onSelectChannel,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final db = ref.watch(databaseProvider);
+    final playlistId =
+        currentChannel.playlistId ?? ref.watch(activePlaylistIdProvider);
+
+    return Material(
+      color: const Color(0xF0101016),
+      elevation: 16,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Live Channels',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                    onPressed: onClose,
+                  ),
+                ],
+              ),
+            ),
+            Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+            Expanded(
+              child: playlistId == null
+                  ? const Center(
+                      child: Text(
+                        'No active playlist',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                    )
+                  : StreamBuilder<List<ContentItemsTableData>>(
+                      stream: db.watchContentItems(playlistId, 'live'),
+                      builder: (context, snapshot) {
+                        final channels = snapshot.data ?? [];
+                        if (channels.isEmpty) {
+                          return const Center(
+                            child: CircularProgressIndicator(
+                                color: AppColors.primary),
+                          );
+                        }
+                        return ListView.builder(
+                          itemCount: channels.length,
+                          itemBuilder: (context, index) {
+                            final ch = channels[index];
+                            final isPlaying =
+                                ch.providerId == currentChannel.providerId;
+                            return ListTile(
+                              autofocus: isPlaying,
+                              selected: isPlaying,
+                              selectedTileColor:
+                                  AppColors.primary.withValues(alpha: 0.2),
+                              leading: Icon(
+                                isPlaying
+                                    ? Icons.play_arrow_rounded
+                                    : Icons.live_tv_rounded,
+                                color: isPlaying
+                                    ? AppColors.primary
+                                    : Colors.white54,
+                                size: 20,
+                              ),
+                              title: Text(
+                                ch.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13.5,
+                                  fontWeight: isPlaying
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                              onTap: () => onSelectChannel(ch),
+                            );
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

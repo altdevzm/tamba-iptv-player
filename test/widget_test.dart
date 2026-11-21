@@ -50,6 +50,24 @@ http://sports.example.com/espn.m3u8
       expect(channels.first.title, 'ESPN');
       expect(channels.first.groupTitle, 'Sports');
     });
+
+    test('handles UTF-8 BOM, #EXTGRP, #EXTVLCOPT, and commas in titles', () async {
+      const sampleM3u = '\uFEFF#EXTM3U\r\n'
+          '#EXTINF:-1 tvg-id="dup.id" tvg-name="News, Inc",News, Sports & More\r\n'
+          '#EXTGRP:Global News\r\n'
+          '#EXTVLCOPT:http-user-agent=MyVLC/1.0\r\n'
+          'http://stream.example.com/news.m3u8\r\n'
+          '#extinf -1 tvg-id="dup.id",Backup News\r\n'
+          'http://stream.example.com/news2.m3u8\r\n';
+
+      final channels = await parseM3u(sampleM3u);
+      expect(channels.length, 2);
+      expect(channels[0].title, 'News, Sports & More');
+      expect(channels[0].groupTitle, 'Global News');
+      expect(channels[0].streamHeaders['User-Agent'], 'MyVLC/1.0');
+      expect(channels[1].title, 'Backup News');
+      expect(channels[1].tvgId, 'dup.id');
+    });
   });
 
   group('XMLTV Parser Tests', () {
@@ -98,6 +116,19 @@ http://sports.example.com/espn.m3u8
       expect(updated.token, 'test_token_abc');
       expect(updated.serverUrl, 'http://portal.example.com:8080/c/');
       expect(updated.macAddress, '00:1A:79:00:11:22');
+    });
+
+    test('normalizes MAC, cleans base URL, and extracts direct URL from cmd', () {
+      expect(StalkerClient.normalizeMac(' 00:1a:79:aa:bb:cc '), '00:1A:79:AA:BB:CC');
+      expect(StalkerClient.cleanBaseUrl('portal.example.com:8080/c/'), 'http://portal.example.com:8080');
+      expect(
+        StalkerClient.extractDirectUrl('ffrt http://stream.example.com/live/123.ts'),
+        'http://stream.example.com/live/123.ts',
+      );
+      expect(
+        StalkerClient.extractDirectUrl('https://cdn.example.com/vod/456.mp4'),
+        'https://cdn.example.com/vod/456.mp4',
+      );
     });
   });
 }

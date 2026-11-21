@@ -293,13 +293,15 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
               )
             else ...[
               const Text(
-                'Universal Search',
+                'Search',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 22,
                   fontWeight: FontWeight.w800,
                 ),
               ),
+              const SizedBox(height: 10),
+              _buildSearchInput(width: double.infinity),
             ],
 
             const SizedBox(height: 16),

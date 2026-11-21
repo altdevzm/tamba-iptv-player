@@ -1,61 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../core/theme/app_colors.dart';
-import '../../core/persistence/database_provider.dart';
-import '../../features/content_details/domain/device_form_factor.dart';
-import '../../features/live_tv/presentation/live_tv_view.dart';
-import '../../features/movies/presentation/movies_view.dart';
-import '../../features/search/presentation/global_search_view.dart';
-import '../../features/series/presentation/series_notifier.dart';
 
-class FlixorTopNavBar extends ConsumerStatefulWidget {
+import '../../core/persistence/app_database.dart';
+import '../../core/persistence/database_provider.dart';
+import '../../core/theme/app_colors.dart';
+import '../../features/content_details/domain/device_form_factor.dart';
+
+class FlixorTopNavBar extends ConsumerWidget {
   final String currentRoute;
+  final StatefulNavigationShell? navigationShell;
 
   const FlixorTopNavBar({
     super.key,
     required this.currentRoute,
+    this.navigationShell,
   });
 
-  @override
-  ConsumerState<FlixorTopNavBar> createState() => _FlixorTopNavBarState();
-}
-
-class _FlixorTopNavBarState extends ConsumerState<FlixorTopNavBar> {
-  final TextEditingController _searchController = TextEditingController();
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  void _syncSearchController(String value) {
-    if (_searchController.text == value) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _searchController.text == value) return;
-      _searchController.value = TextEditingValue(
-        text: value,
-        selection: TextSelection.collapsed(offset: value.length),
-      );
-    });
+  void _navigateTab(BuildContext context, int branchIndex, String route) {
+    if (navigationShell != null) {
+      navigationShell!.goBranch(branchIndex);
+    } else {
+      context.go(route);
+    }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isSyncing = ref.watch(isSyncingPlaylistProvider);
     final syncStatus = ref.watch(playlistSyncStatusProvider);
-    final screenWidth = MediaQuery.of(context).size.width;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+
     if (screenWidth < 768 && !DeviceFormFactor.isTv(context)) {
-      return _buildMobileHeader(context);
+      return _buildMobileHeader(context, ref, isSyncing: isSyncing);
     }
-    final isVeryCompact = screenWidth < 600;
 
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
-        color: const Color(0xFF0E0708).withValues(alpha: 0.95),
+        color: AppColors.background,
         border: Border(
           bottom: BorderSide(
             color: Colors.white.withValues(alpha: 0.08),
@@ -63,350 +45,415 @@ class _FlixorTopNavBarState extends ConsumerState<FlixorTopNavBar> {
           ),
         ),
       ),
-      child: Row(
-        children: [
-          // ── App Brand Logo (Red Play Icon + FLIXOR) ──
-          InkWell(
-            onTap: () => context.go('/home'),
-            borderRadius: BorderRadius.circular(8),
+      child: SafeArea(
+        bottom: false,
+        child: SizedBox(
+          height: 58,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
-              mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE50914),
-                    borderRadius: BorderRadius.circular(6),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFE50914).withValues(alpha: 0.5),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
+                Expanded(
+                  child: Center(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      physics: const BouncingScrollPhysics(),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _buildNavPill(
+                            label: 'Home',
+                            icon: Icons.home_rounded,
+                            isActive:
+                                currentRoute == '/home' || currentRoute == '/',
+                            onTap: () => _navigateTab(context, 0, '/home'),
+                          ),
+                          _buildNavPill(
+                            label: 'Live TV',
+                            icon: Icons.live_tv_rounded,
+                            isActive: currentRoute.startsWith('/live'),
+                            onTap: () => _navigateTab(context, 1, '/live'),
+                          ),
+                          _buildNavPill(
+                            label: 'Movies',
+                            icon: Icons.movie_rounded,
+                            isActive: currentRoute.startsWith('/movies'),
+                            onTap: () => _navigateTab(context, 2, '/movies'),
+                          ),
+                          _buildNavPill(
+                            label: 'Series',
+                            icon: Icons.tv_rounded,
+                            isActive: currentRoute.startsWith('/series'),
+                            onTap: () => _navigateTab(context, 3, '/series'),
+                          ),
+                          _buildNavPill(
+                            label: 'My List',
+                            icon: Icons.bookmark_rounded,
+                            isActive: currentRoute.startsWith('/favorites'),
+                            onTap: () => _navigateTab(context, 4, '/favorites'),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.play_arrow_rounded,
-                      color: Colors.white,
-                      size: 18,
                     ),
                   ),
                 ),
-                if (!isVeryCompact) ...[
-                  const SizedBox(width: 8),
-                  const Text(
-                    'FLIXOR',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 1.2,
+                if (isSyncing) ...[
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
                     ),
                   ),
+                  if (screenWidth > 960 && syncStatus != null) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      syncStatus,
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 10),
                 ],
+                IconButton(
+                  tooltip: 'Search',
+                  onPressed: () => context.go('/search'),
+                  icon: Icon(
+                    Icons.search_rounded,
+                    color: currentRoute.startsWith('/search')
+                        ? AppColors.primary
+                        : Colors.white,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: () => context.go('/settings'),
+                  icon: Icon(
+                    currentRoute.startsWith('/settings')
+                        ? Icons.settings_rounded
+                        : Icons.settings_outlined,
+                    color: currentRoute.startsWith('/settings')
+                        ? AppColors.primary
+                        : Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                _ProfileAvatarButton(
+                  isActive: currentRoute.startsWith('/playlists'),
+                  onTap: () => _showProfileSheet(context, ref),
+                ),
               ],
             ),
           ),
-
-          const SizedBox(width: 12),
-
-          // ── Directly Visible Navigation Capsule (Scrollable on narrow viewports) ──
-          Expanded(
-            child: Center(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.1),
-                      width: 1,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildNavPill(
-                        label: 'Home',
-                        route: '/home',
-                        icon: Icons.home_rounded,
-                        isActive: widget.currentRoute == '/home' ||
-                            widget.currentRoute == '/',
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'Live TV',
-                        route: '/live',
-                        icon: Icons.live_tv_rounded,
-                        isActive: widget.currentRoute.startsWith('/live'),
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'Movies',
-                        route: '/movies',
-                        icon: Icons.movie_rounded,
-                        isActive: widget.currentRoute.startsWith('/movies'),
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'TV Shows',
-                        route: '/series',
-                        icon: Icons.tv_rounded,
-                        isActive: widget.currentRoute.startsWith('/series'),
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'My List',
-                        route: '/favorites',
-                        icon: Icons.bookmark_rounded,
-                        isActive: widget.currentRoute.startsWith('/favorites'),
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'Settings',
-                        route: '/settings',
-                        icon: Icons.settings_rounded,
-                        isActive: widget.currentRoute.startsWith('/settings'),
-                        context: context,
-                      ),
-                      _buildNavPill(
-                        label: 'Search',
-                        route: '/search',
-                        icon: Icons.search_rounded,
-                        isActive: widget.currentRoute.startsWith('/search'),
-                        context: context,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(width: 8),
-
-          // ── Right Status / Format Badge ("UHD 770") ──
-          if (isSyncing) ...[
-            const SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: AppColors.primary,
-              ),
-            ),
-            const SizedBox(width: 6),
-            if (screenWidth > 1000)
-              Text(
-                syncStatus ?? 'Syncing...',
-                style: const TextStyle(
-                  color: AppColors.primary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            const SizedBox(width: 8),
-          ],
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildMobileHeader(BuildContext context) {
-    final isMoviesRoute = widget.currentRoute.startsWith('/movies') ||
-        widget.currentRoute.startsWith('/popular');
-    final isSeriesRoute = widget.currentRoute.startsWith('/series');
-    final isLiveRoute = widget.currentRoute.startsWith('/live');
-    final isGlobalSearchRoute = widget.currentRoute.startsWith('/search');
-    final isSearchEnabled =
-        isMoviesRoute || isSeriesRoute || isLiveRoute || isGlobalSearchRoute;
-    final searchQuery = isMoviesRoute
-        ? ref.watch(moviesFilterProvider.select((state) => state.searchQuery))
-        : isSeriesRoute
-            ? ref.watch(
-                seriesFilterProvider.select((state) => state.searchQuery))
-            : isLiveRoute
-                ? ref.watch(
-                    liveTvNotifierProvider.select((state) => state.searchQuery))
-                : isGlobalSearchRoute
-                    ? ref.watch(
-                        globalSearchProvider.select((state) => state.query))
-                    : null;
-
-    if (searchQuery != null) {
-      _syncSearchController(searchQuery);
-    } else if (!isSearchEnabled && _searchController.text.isNotEmpty) {
-      _syncSearchController('');
-    }
+  Widget _buildMobileHeader(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool isSyncing,
+  }) {
+    final isSearch = currentRoute.startsWith('/search');
+    final isSettings = currentRoute.startsWith('/settings');
 
     return Container(
-      height: 62,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      child: Row(
-        children: [
-          Expanded(
-            child: Material(
-              color: AppColors.surfaceElevated,
-              borderRadius: BorderRadius.circular(10),
-              child: SizedBox(
-                height: 44,
-                child: TextField(
-                  controller: _searchController,
-                  readOnly: !isSearchEnabled,
-                  onTap: isSearchEnabled ? null : () => context.go('/search'),
-                  onChanged: (value) {
-                    if (isMoviesRoute) {
-                      ref
-                          .read(moviesFilterProvider.notifier)
-                          .setSearchQuery(value);
-                    } else if (isSeriesRoute) {
-                      ref
-                          .read(seriesFilterProvider.notifier)
-                          .setSearchQuery(value);
-                    } else if (isLiveRoute) {
-                      ref.read(liveTvNotifierProvider.notifier).search(value);
-                    } else if (isGlobalSearchRoute) {
-                      ref.read(globalSearchProvider.notifier).setQuery(value);
-                    }
-                  },
-                  onSubmitted: isGlobalSearchRoute
-                      ? (value) => ref
-                          .read(globalSearchProvider.notifier)
-                          .addRecentSearch(value)
-                      : null,
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                  textInputAction: TextInputAction.search,
-                  decoration: InputDecoration(
-                    hintText: isMoviesRoute
-                        ? 'Search movies...'
-                        : isSeriesRoute
-                            ? 'Search TV series...'
-                            : isLiveRoute
-                                ? 'Search channels...'
-                                : 'Search movies, shows and channels',
-                    hintStyle: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 14,
-                    ),
-                    prefixIcon: const Icon(Icons.search_rounded,
-                        color: AppColors.textSecondary, size: 20),
-                    suffixIcon:
-                        isSearchEnabled && _searchController.text.isNotEmpty
-                            ? IconButton(
-                                tooltip: 'Clear search',
-                                onPressed: () {
-                                  _searchController.clear();
-                                  if (isMoviesRoute) {
-                                    ref
-                                        .read(moviesFilterProvider.notifier)
-                                        .setSearchQuery('');
-                                  } else if (isSeriesRoute) {
-                                    ref
-                                        .read(seriesFilterProvider.notifier)
-                                        .setSearchQuery('');
-                                  } else if (isLiveRoute) {
-                                    ref
-                                        .read(liveTvNotifierProvider.notifier)
-                                        .search('');
-                                  } else {
-                                    ref
-                                        .read(globalSearchProvider.notifier)
-                                        .setQuery('');
-                                  }
-                                },
-                                icon: const Icon(Icons.close_rounded, size: 18),
-                              )
-                            : null,
-                    filled: true,
-                    fillColor: AppColors.surfaceElevated,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide:
-                          const BorderSide(color: AppColors.glassBorder),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide:
-                          const BorderSide(color: AppColors.glassBorder),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: AppColors.primary),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        border: Border(
+          bottom: BorderSide(
+            color: Colors.white.withValues(alpha: 0.06),
+            width: 0.8,
+          ),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: SizedBox(
+          height: 52,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Row(
+              children: [
+                const Spacer(),
+                if (isSyncing) ...[
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
                     ),
                   ),
+                  const SizedBox(width: 8),
+                ],
+                IconButton(
+                  tooltip: 'Search',
+                  onPressed: () => context.go('/search'),
+                  icon: Icon(
+                    Icons.search_rounded,
+                    color: isSearch ? AppColors.primary : Colors.white,
+                    size: 23,
+                  ),
+                  constraints:
+                      const BoxConstraints.tightFor(width: 40, height: 40),
+                  padding: EdgeInsets.zero,
                 ),
-              ),
+                IconButton(
+                  tooltip: 'Settings',
+                  onPressed: () => context.go('/settings'),
+                  icon: Icon(
+                    isSettings
+                        ? Icons.settings_rounded
+                        : Icons.settings_outlined,
+                    color: isSettings ? AppColors.primary : Colors.white,
+                    size: 22,
+                  ),
+                  constraints:
+                      const BoxConstraints.tightFor(width: 40, height: 40),
+                  padding: EdgeInsets.zero,
+                ),
+                const SizedBox(width: 2),
+                _ProfileAvatarButton(
+                  isActive: currentRoute.startsWith('/playlists'),
+                  onTap: () => _showProfileSheet(context, ref),
+                ),
+              ],
             ),
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: 'Settings',
-            onPressed: () => context.go('/settings'),
-            icon: const Icon(Icons.settings_outlined),
-            color: Colors.white,
-            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
-            padding: EdgeInsets.zero,
-          ),
-        ],
+        ),
       ),
+    );
+  }
+
+  void _showProfileSheet(BuildContext context, WidgetRef ref) {
+    final db = ref.read(databaseProvider);
+    final activePlaylistId = ref.read(activePlaylistIdProvider);
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          top: false,
+          child: StreamBuilder<List<PlaylistsTableData>>(
+            stream: db.watchAllPlaylists(),
+            builder: (context, snapshot) {
+              final playlists = snapshot.data ?? [];
+              final active =
+                  playlists.where((p) => p.id == activePlaylistId).firstOrNull ??
+                      playlists.firstOrNull;
+
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.18),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: AppColors.primary.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.account_circle_rounded,
+                            color: Colors.white,
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                active?.name ?? 'Tamba IPTV Profile',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                active != null
+                                    ? '${active.type.toUpperCase()} • ${active.channelCount} items'
+                                    : 'No active playlist connected',
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 12.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+                    const SizedBox(height: 8),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.playlist_play_rounded,
+                          color: Colors.white),
+                      title: const Text('My Playlists & Providers',
+                          style: TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.textMuted),
+                      onTap: () {
+                        Navigator.pop(sheetCtx);
+                        context.go('/playlists');
+                      },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.bookmark_rounded,
+                          color: Colors.white),
+                      title: const Text('My List & Favorites',
+                          style: TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.textMuted),
+                      onTap: () {
+                        Navigator.pop(sheetCtx);
+                        _navigateTab(context, 4, '/favorites');
+                      },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.download_done_rounded,
+                          color: Colors.white),
+                      title: const Text('Downloads',
+                          style: TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.textMuted),
+                      onTap: () {
+                        Navigator.pop(sheetCtx);
+                        context.go('/downloads');
+                      },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.settings_rounded,
+                          color: Colors.white),
+                      title: const Text('Settings',
+                          style: TextStyle(color: Colors.white, fontSize: 14)),
+                      trailing: const Icon(Icons.chevron_right_rounded,
+                          color: AppColors.textMuted),
+                      onTap: () {
+                        Navigator.pop(sheetCtx);
+                        context.go('/settings');
+                      },
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
   Widget _buildNavPill({
     required String label,
-    required String route,
     required IconData icon,
     required bool isActive,
-    required BuildContext context,
+    required VoidCallback onTap,
   }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 3),
       child: InkWell(
-        onTap: () => context.go(route),
-        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
           decoration: BoxDecoration(
             color: isActive
-                ? Colors.white.withValues(alpha: 0.18)
+                ? Colors.white.withValues(alpha: 0.14)
                 : Colors.transparent,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: isActive
-                  ? Colors.white.withValues(alpha: 0.25)
-                  : Colors.transparent,
-              width: 0.8,
-            ),
+            borderRadius: BorderRadius.circular(20),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 icon,
-                size: 14,
+                size: 15,
                 color: isActive ? Colors.white : Colors.white60,
               ),
               const SizedBox(width: 6),
               Text(
                 label,
                 style: TextStyle(
-                  color: isActive
-                      ? Colors.white
-                      : Colors.white.withValues(alpha: 0.7),
-                  fontSize: 12,
+                  color: isActive ? Colors.white : Colors.white70,
+                  fontSize: 13,
                   fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                  letterSpacing: 0.2,
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileAvatarButton extends StatelessWidget {
+  final bool isActive;
+  final VoidCallback onTap;
+
+  const _ProfileAvatarButton({
+    required this.isActive,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Profile & Account',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Center(
+            child: Icon(
+              isActive
+                  ? Icons.account_circle_rounded
+                  : Icons.account_circle_outlined,
+              color: isActive ? AppColors.primary : Colors.white,
+              size: 24,
+            ),
           ),
         ),
       ),

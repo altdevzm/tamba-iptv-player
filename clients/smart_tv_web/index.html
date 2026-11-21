@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Tamba IPTV – Smart TV & Web</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- HLS.js for browser/webOS/Tizen HLS stream compatibility -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- Collapsible 10-foot Smart TV & Desktop Sidebar -->
+    <aside id="sidebar" class="sidebar" aria-label="Primary navigation">
+      <div class="brand">
+        <span class="brand-badge">▶</span>
+        <span class="brand-text">TAMBA <em>IPTV</em></span>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-item active" data-nav="home" tabindex="0">🏠 <span>Home</span></button>
+        <button class="nav-item" data-nav="live" tabindex="0">📺 <span>Live TV</span></button>
+        <button class="nav-item" data-nav="movies" tabindex="0">🎬 <span>Movies</span></button>
+        <button class="nav-item" data-nav="series" tabindex="0">🎞️ <span>Series</span></button>
+        <button class="nav-item" data-nav="favorites" tabindex="0">🔖 <span>My List</span></button>
+        <button class="nav-item" data-nav="search" tabindex="0">🔍 <span>Search</span></button>
+        <button class="nav-item" data-nav="settings" tabindex="0">⚙️ <span>Playlist & Account</span></button>
+      </nav>
+    </aside>
+
+    <!-- Main Viewport -->
+    <main id="main-content" class="main-content" role="main"></main>
+  </div>
+
+  <!-- Fullscreen Video Player Overlay -->
+  <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-label="Video Player">
+    <video id="video-element" playsinline autoplay></video>
+    <div id="player-hud" class="player-hud">
+      <div class="player-top">
+        <button id="btn-player-back" class="hud-btn" tabindex="0">← Back</button>
+        <div class="player-meta">
+          <h2 id="player-title">Channel</h2>
+          <span id="player-badge" class="live-pill hidden">● LIVE</span>
+        </div>
+        <button id="btn-player-channels" class="hud-btn hidden" tabindex="0">Channels</button>
+      </div>
+      <div class="player-center">
+        <button id="btn-prev" class="hud-circle" tabindex="0">⏮</button>
+        <button id="btn-play-pause" class="hud-circle primary" tabindex="0">⏸</button>
+        <button id="btn-next" class="hud-circle" tabindex="0">⏭</button>
+      </div>
+      <div class="player-bottom">
+        <span id="player-status" class="player-status">Playing</span>
+      </div>
+    </div>
+    <aside id="player-channel-drawer" class="channel-drawer hidden"></aside>
+  </div>
+</body>
+</html>

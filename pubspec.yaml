@@ -1,7 +1,7 @@
 name: filimu_plus
 description: "Tamba IPTV - Open-source IPTV media player"
 publish_to: 'none'
-version: 1.0.3+4
+version: 1.0.5+6
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -44,6 +44,7 @@ dependencies:
   shelf_router: ^1.1.4
 
   # File Picker & Utilities
+  cross_file: ^0.3.0
   file_picker: ^8.0.3
   uuid: ^4.4.0
   intl: ^0.19.0

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/theme/app_colors.dart';
 import '../../features/content_details/domain/device_form_factor.dart';
 import 'flixor_top_nav_bar.dart';
 import 'mobile_bottom_nav.dart';
@@ -9,11 +10,13 @@ import 'top_header_bar.dart';
 
 class PlatformNavigationShell extends StatelessWidget {
   final String currentRoute;
+  final StatefulNavigationShell? navigationShell;
   final Widget child;
 
   const PlatformNavigationShell({
     super.key,
     required this.currentRoute,
+    this.navigationShell,
     required this.child,
   });
 
@@ -26,7 +29,7 @@ class PlatformNavigationShell extends StatelessWidget {
     if (isTv || isDesktop) {
       final compactSidebar = isTv || width < 1000;
       return Scaffold(
-        backgroundColor: const Color(0xFF0E0708),
+        backgroundColor: AppColors.background,
         body: Row(
           children: [
             PlatformNavigationSidebar(
@@ -54,13 +57,19 @@ class PlatformNavigationShell extends StatelessWidget {
         width < DeviceFormFactor.mobileNavigationBreakpoint;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0E0708),
+      backgroundColor: AppColors.background,
       bottomNavigationBar: showBottomNavigation
-          ? FilimuMobileBottomNav(currentRoute: currentRoute)
+          ? FilimuMobileBottomNav(
+              currentRoute: currentRoute,
+              navigationShell: navigationShell,
+            )
           : null,
       body: Column(
         children: [
-          FlixorTopNavBar(currentRoute: currentRoute),
+          FlixorTopNavBar(
+            currentRoute: currentRoute,
+            navigationShell: navigationShell,
+          ),
           Expanded(child: child),
         ],
       ),

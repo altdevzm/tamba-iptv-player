@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - 'v*'
+      - '[0-9]*'
   pull_request:
     branches:
       - main
@@ -75,6 +76,8 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions "$APK" |
             grep -q 'android.permission.INTERNET'
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$APK" AndroidManifest.xml |
+            grep -Eq 'android:usesCleartextTraffic.*(true|0xffffffff)'
 
       - name: Build Android App Bundle
         run: flutter build appbundle --release --no-pub
@@ -208,8 +211,9 @@ jobs:
           BUNDLE="$GITHUB_WORKSPACE/build/linux/x64/release/bundle"
           STAGING="$RUNNER_TEMP/tamba-iptv-package-root"
           PACKAGE_DIR="$GITHUB_WORKSPACE/build/release-assets"
-          mkdir -p "$STAGING/opt" "$STAGING/usr/bin" "$STAGING/usr/share/applications" "$PACKAGE_DIR"
+          mkdir -p "$STAGING/opt" "$STAGING/usr/bin" "$STAGING/usr/share/applications" "$STAGING/usr/share/icons/hicolor/512x512/apps" "$PACKAGE_DIR"
           cp -a "$BUNDLE" "$STAGING/opt/tamba-iptv"
+          cp "$GITHUB_WORKSPACE/assets/images/tamba_logo.png" "$STAGING/usr/share/icons/hicolor/512x512/apps/tamba-iptv.png"
           cat > "$STAGING/usr/bin/tamba-iptv" <<'EOF'
           #!/bin/sh
           exec /opt/tamba-iptv/filimu_plus "$@"
@@ -221,7 +225,7 @@ jobs:
           Name=Tamba IPTV
           Comment=IPTV media player
           Exec=tamba-iptv
-          Icon=multimedia-player
+          Icon=tamba-iptv
           Terminal=false
           Categories=AudioVideo;Player;TV;
           EOF
@@ -261,7 +265,7 @@ jobs:
 
   publish-release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     needs:
       - android
       - windows

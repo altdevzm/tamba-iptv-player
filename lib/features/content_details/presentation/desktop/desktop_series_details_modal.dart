@@ -551,6 +551,18 @@ class DesktopSeriesDetailsModal extends ConsumerWidget {
                                                       fontSize: 12,
                                                     ),
                                                   ),
+                                                const SizedBox(width: 8),
+                                                IconButton(
+                                                  icon: const Icon(
+                                                    Icons.download_rounded,
+                                                    color: Colors.white70,
+                                                    size: 19,
+                                                  ),
+                                                  tooltip: 'Download Episode',
+                                                  visualDensity: VisualDensity.compact,
+                                                  onPressed: () =>
+                                                      controller.downloadEpisode(context, ep, idx),
+                                                ),
                                               ],
                                             ),
                                             if (epPlot != null && epPlot.isNotEmpty) ...[

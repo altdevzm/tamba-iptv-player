@@ -84,8 +84,8 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
       backgroundColor: Colors.transparent,
       body: Padding(
         padding: EdgeInsets.symmetric(
-          horizontal: isMobile ? 16 : 32,
-          vertical: isMobile ? 16 : 28,
+          horizontal: isMobile ? 16 : 28,
+          vertical: isMobile ? 10 : 24,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -103,19 +103,21 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
                           color: Colors.white,
                           fontSize: isMobile ? 22 : 26,
                           fontWeight: FontWeight.w800,
-                          letterSpacing: -0.5,
+                          letterSpacing: -0.4,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Browse and stream on-demand television shows',
-                        maxLines: isMobile ? 2 : 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.6),
-                          fontSize: 13,
+                      if (!isMobile) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Browse and stream on-demand television shows',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            fontSize: 13,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -123,59 +125,20 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
                   SizedBox(
                     width: 260,
                     height: 42,
-                    child: TextField(
-                      controller: _searchController,
-                      onChanged: (val) => ref
-                          .read(seriesFilterProvider.notifier)
-                          .setSearchQuery(val),
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      decoration: InputDecoration(
-                        hintText: 'Search TV series...',
-                        hintStyle: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.3),
-                          fontSize: 13,
-                        ),
-                        prefixIcon: const Icon(Icons.search_rounded,
-                            color: Colors.white54, size: 18),
-                        suffixIcon: _searchController.text.isNotEmpty
-                            ? IconButton(
-                                icon: const Icon(Icons.close_rounded,
-                                    color: Colors.white54, size: 16),
-                                onPressed: () {
-                                  _searchController.clear();
-                                  ref
-                                      .read(seriesFilterProvider.notifier)
-                                      .setSearchQuery('');
-                                },
-                              )
-                            : null,
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.06),
-                        contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.12),
-                          ),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.12),
-                          ),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          borderSide:
-                              const BorderSide(color: AppColors.primary),
-                        ),
-                      ),
-                    ),
+                    child: _buildSearchField(ref),
                   ),
               ],
             ),
 
-            const SizedBox(height: 18),
+            if (isMobile) ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 42,
+                child: _buildSearchField(ref),
+              ),
+            ],
+
+            SizedBox(height: isMobile ? 10 : 16),
 
             // ── Sort By & Filter By Bar ──
             _SeriesSortFilterBar(
@@ -193,7 +156,7 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
               hasActiveFilters: filter.hasActiveFilters,
             ),
 
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
 
             // Category Chips
             categoriesAsync.when(
@@ -279,7 +242,7 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
               error: (_, __) => const SizedBox.shrink(),
             ),
 
-            const SizedBox(height: 20),
+            SizedBox(height: isMobile ? 12 : 18),
 
             // Series Grid
             Expanded(
@@ -289,18 +252,31 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
                     return _buildEmptyState(context);
                   }
 
-                  return GridView.builder(
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 200,
-                      childAspectRatio: 0.65,
-                      crossAxisSpacing: 16,
-                      mainAxisSpacing: 16,
-                    ),
-                    itemCount: seriesList.length,
-                    itemBuilder: (context, index) {
-                      final item = seriesList[index];
-                      return _buildSeriesCard(context, item);
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      final w = constraints.maxWidth;
+                      final gridDelegate = w < 600
+                          ? SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: w < 340 ? 2 : 3,
+                              childAspectRatio: 0.64,
+                              crossAxisSpacing: 10,
+                              mainAxisSpacing: 12,
+                            )
+                          : const SliverGridDelegateWithMaxCrossAxisExtent(
+                              maxCrossAxisExtent: 185,
+                              childAspectRatio: 0.65,
+                              crossAxisSpacing: 14,
+                              mainAxisSpacing: 14,
+                            );
+                      return GridView.builder(
+                        padding: const EdgeInsets.only(bottom: 96),
+                        gridDelegate: gridDelegate,
+                        itemCount: seriesList.length,
+                        itemBuilder: (context, index) {
+                          final item = seriesList[index];
+                          return _buildSeriesCard(context, item);
+                        },
+                      );
                     },
                   );
                 },
@@ -316,6 +292,45 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchField(WidgetRef ref) {
+    return TextField(
+      controller: _searchController,
+      onChanged: (val) =>
+          ref.read(seriesFilterProvider.notifier).setSearchQuery(val),
+      style: const TextStyle(color: Colors.white, fontSize: 13.5),
+      decoration: InputDecoration(
+        hintText: 'Search TV series...',
+        hintStyle: TextStyle(
+          color: Colors.white.withValues(alpha: 0.4),
+          fontSize: 13.5,
+        ),
+        prefixIcon:
+            const Icon(Icons.search_rounded, color: Colors.white54, size: 19),
+        suffixIcon: _searchController.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.close_rounded,
+                    color: Colors.white54, size: 17),
+                onPressed: () {
+                  _searchController.clear();
+                  ref.read(seriesFilterProvider.notifier).setSearchQuery('');
+                },
+              )
+            : null,
+        filled: true,
+        fillColor: AppColors.surfaceElevated,
+        contentPadding: const EdgeInsets.symmetric(vertical: 0),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
         ),
       ),
     );
@@ -419,82 +434,87 @@ class _SeriesSortFilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        _pill<SeriesSortOption>(
-          context: context,
-          icon: Icons.sort_rounded,
-          label: sortBy.label,
-          isActive: sortBy != SeriesSortOption.titleAZ,
-          items: SeriesSortOption.values
-              .map((s) => PopupMenuItem(value: s, child: Text(s.label)))
-              .toList(),
-          onSelected: onSortChanged,
-        ),
-        const SizedBox(width: 8),
-        _pill<int?>(
-          context: context,
-          icon: Icons.calendar_month_rounded,
-          label: filterYear != null ? '$filterYear' : 'Year',
-          isActive: filterYear != null,
-          items: [
-            const PopupMenuItem(value: null, child: Text('All Years')),
-            ...List.generate(6, (i) {
-              final y = 2026 - i;
-              return PopupMenuItem(value: y, child: Text('$y'));
-            }),
-          ],
-          onSelected: onYearChanged,
-        ),
-        const SizedBox(width: 8),
-        _pill<double?>(
-          context: context,
-          icon: Icons.star_rounded,
-          label: minRating != null
-              ? '${minRating!.toStringAsFixed(0)}+ ★'
-              : 'Rating',
-          isActive: minRating != null,
-          items: [
-            const PopupMenuItem(value: null, child: Text('All Ratings')),
-            const PopupMenuItem(value: 6.0, child: Text('6.0+ ★')),
-            const PopupMenuItem(value: 7.0, child: Text('7.0+ ★')),
-            const PopupMenuItem(value: 7.5, child: Text('7.5+ ★')),
-            const PopupMenuItem(value: 8.0, child: Text('8.0+ ★')),
-            const PopupMenuItem(value: 9.0, child: Text('9.0+ ★')),
-          ],
-          onSelected: onRatingChanged,
-        ),
-        if (hasActiveFilters) ...[
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          _pill<SeriesSortOption>(
+            context: context,
+            icon: Icons.sort_rounded,
+            label: sortBy.label,
+            isActive: sortBy != SeriesSortOption.titleAZ,
+            items: SeriesSortOption.values
+                .map((s) => PopupMenuItem(value: s, child: Text(s.label)))
+                .toList(),
+            onSelected: onSortChanged,
+          ),
           const SizedBox(width: 8),
-          InkWell(
-            onTap: onReset,
-            borderRadius: BorderRadius.circular(18),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-              decoration: BoxDecoration(
-                border:
-                    Border.all(color: Colors.redAccent.withValues(alpha: 0.5)),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.clear_rounded, color: Colors.redAccent, size: 13),
-                  SizedBox(width: 4),
-                  Text(
-                    'Reset',
-                    style: TextStyle(
-                      color: Colors.redAccent,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+          _pill<int?>(
+            context: context,
+            icon: Icons.calendar_month_rounded,
+            label: filterYear != null ? '$filterYear' : 'Year',
+            isActive: filterYear != null,
+            items: [
+              const PopupMenuItem(value: null, child: Text('All Years')),
+              ...List.generate(6, (i) {
+                final y = 2026 - i;
+                return PopupMenuItem(value: y, child: Text('$y'));
+              }),
+            ],
+            onSelected: onYearChanged,
+          ),
+          const SizedBox(width: 8),
+          _pill<double?>(
+            context: context,
+            icon: Icons.star_rounded,
+            label: minRating != null
+                ? '${minRating!.toStringAsFixed(0)}+ ★'
+                : 'Rating',
+            isActive: minRating != null,
+            items: [
+              const PopupMenuItem(value: null, child: Text('All Ratings')),
+              const PopupMenuItem(value: 6.0, child: Text('6.0+ ★')),
+              const PopupMenuItem(value: 7.0, child: Text('7.0+ ★')),
+              const PopupMenuItem(value: 7.5, child: Text('7.5+ ★')),
+              const PopupMenuItem(value: 8.0, child: Text('8.0+ ★')),
+              const PopupMenuItem(value: 9.0, child: Text('9.0+ ★')),
+            ],
+            onSelected: onRatingChanged,
+          ),
+          if (hasActiveFilters) ...[
+            const SizedBox(width: 8),
+            InkWell(
+              onTap: onReset,
+              borderRadius: BorderRadius.circular(18),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                      color: Colors.redAccent.withValues(alpha: 0.5)),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.clear_rounded,
+                        color: Colors.redAccent, size: 13),
+                    SizedBox(width: 4),
+                    Text(
+                      'Reset',
+                      style: TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
+          ],
         ],
-      ],
+      ),
     );
   }
 

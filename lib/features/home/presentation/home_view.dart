@@ -1,21 +1,39 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../core/theme/app_colors.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
+import '../../../core/theme/app_colors.dart';
 import '../../../shared/models/media_item.dart';
-import '../../player/data/player_controller.dart';
 import '../../content_details/presentation/adaptive_details_coordinator.dart';
+import '../../player/data/player_controller.dart';
 import 'widgets/flixor_hero_spotlight.dart';
 
 // ---------------------------------------------------------------------------
 // Dynamic Database Content Providers (100% Real Playlist Data)
 // ---------------------------------------------------------------------------
+
+MediaItem _toMediaItem(ContentItemsTableData c) {
+  return MediaItem(
+    id: c.providerId,
+    title: c.title,
+    type: c.type == 'series'
+        ? MediaType.series
+        : (c.type == 'live' ? MediaType.live : MediaType.movie),
+    posterUrl: c.posterUrl,
+    backdropUrl: c.backdropUrl,
+    rating: c.rating,
+    releaseYear: c.releaseYear,
+    streamUrl: c.streamUrl,
+    playlistId: c.playlistId,
+    providerId: c.providerId,
+    contentDbId: c.id,
+  );
+}
 
 final homeMoviesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
   final playlistId = ref.watch(activePlaylistIdProvider);
@@ -24,21 +42,28 @@ final homeMoviesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
 
   return db
       .watchTopContentItems(playlistId, 'movie', limit: 30)
-      .map((rows) => rows
-          .map((c) => MediaItem(
-                id: c.providerId,
-                title: c.title,
-                type: MediaType.movie,
-                posterUrl: c.posterUrl,
-                backdropUrl: c.backdropUrl,
-                rating: c.rating,
-                releaseYear: c.releaseYear,
-                streamUrl: c.streamUrl,
-                playlistId: c.playlistId,
-                providerId: c.providerId,
-                contentDbId: c.id,
-              ))
-          .toList());
+      .map((rows) => rows.map(_toMediaItem).toList());
+});
+
+final homePopularMoviesProvider =
+    StreamProvider.autoDispose<List<MediaItem>>((ref) {
+  final playlistId = ref.watch(activePlaylistIdProvider);
+  if (playlistId == null) return Stream.value([]);
+  final db = ref.watch(databaseProvider);
+
+  return (db.select(db.contentItemsTable)
+        ..where((t) => t.playlistId.equals(playlistId))
+        ..where((t) => t.type.equals('movie'))
+        ..where((t) => t.posterUrl.isNotNull() & t.posterUrl.isNotValue(''))
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.rating, mode: drift.OrderingMode.desc),
+          (t) => drift.OrderingTerm(
+              expression: t.releaseYear, mode: drift.OrderingMode.desc),
+        ])
+        ..limit(24))
+      .watch()
+      .map((rows) => rows.map(_toMediaItem).toList());
 });
 
 final homeSeriesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
@@ -48,21 +73,28 @@ final homeSeriesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
 
   return db
       .watchTopContentItems(playlistId, 'series', limit: 30)
-      .map((rows) => rows
-          .map((c) => MediaItem(
-                id: c.providerId,
-                title: c.title,
-                type: MediaType.series,
-                posterUrl: c.posterUrl,
-                backdropUrl: c.backdropUrl,
-                rating: c.rating,
-                releaseYear: c.releaseYear,
-                streamUrl: c.streamUrl,
-                playlistId: c.playlistId,
-                providerId: c.providerId,
-                contentDbId: c.id,
-              ))
-          .toList());
+      .map((rows) => rows.map(_toMediaItem).toList());
+});
+
+final homeLiveTvProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
+  final playlistId = ref.watch(activePlaylistIdProvider);
+  if (playlistId == null) return Stream.value([]);
+  final db = ref.watch(databaseProvider);
+
+  return (db.select(db.contentItemsTable)
+        ..where((t) => t.playlistId.equals(playlistId))
+        ..where((t) => t.type.equals('live'))
+        ..limit(24))
+      .watch()
+      .map((rows) {
+    final sorted = List.of(rows)
+      ..sort((a, b) {
+        final aHasLogo = (a.posterUrl?.isNotEmpty ?? false) ? 1 : 0;
+        final bHasLogo = (b.posterUrl?.isNotEmpty ?? false) ? 1 : 0;
+        return bHasLogo.compareTo(aHasLogo);
+      });
+    return sorted.map(_toMediaItem).toList();
+  });
 });
 
 final homeLatest2026Provider =
@@ -72,31 +104,83 @@ final homeLatest2026Provider =
   final db = ref.watch(databaseProvider);
 
   return db.watchLatestReleases(playlistId, limit: 30).map((rows) {
-    // Prioritize 2026 releases first, then newest release years descending
-    final sorted = List.of(rows);
-    sorted.sort((a, b) {
-      final aIs2026 = (a.releaseYear == 2026) ? 1 : 0;
-      final bIs2026 = (b.releaseYear == 2026) ? 1 : 0;
-      if (aIs2026 != bIs2026) return bIs2026.compareTo(aIs2026);
-      return (b.releaseYear ?? 0).compareTo(a.releaseYear ?? 0);
-    });
-
-    return sorted
-        .map((c) => MediaItem(
-              id: c.providerId,
-              title: c.title,
-              type: c.type == 'series' ? MediaType.series : MediaType.movie,
-              posterUrl: c.posterUrl,
-              backdropUrl: c.backdropUrl,
-              rating: c.rating,
-              releaseYear: c.releaseYear,
-              streamUrl: c.streamUrl,
-              playlistId: c.playlistId,
-              providerId: c.providerId,
-              contentDbId: c.id,
-            ))
-        .toList();
+    final sorted = List.of(rows)
+      ..sort((a, b) => (b.releaseYear ?? 0).compareTo(a.releaseYear ?? 0));
+    return sorted.map(_toMediaItem).toList();
   });
+});
+
+class HomeCategoryRail {
+  final String title;
+  final List<MediaItem> items;
+  final String route;
+
+  const HomeCategoryRail({
+    required this.title,
+    required this.items,
+    required this.route,
+  });
+}
+
+/// Discovers real genre carousels (Action, Comedy, Drama, Sci-Fi, etc.) from the active playlist.
+final homeGenreRailsProvider =
+    FutureProvider.autoDispose<List<HomeCategoryRail>>((ref) async {
+  final playlistId = ref.watch(activePlaylistIdProvider);
+  if (playlistId == null) return [];
+  final db = ref.watch(databaseProvider);
+
+  final categories = await db.getCategories(playlistId, 'movies');
+  if (categories.isEmpty) return [];
+
+  const genreMatchers = <String, List<String>>{
+    'Action Movies': ['action'],
+    'Comedy': ['comedy', 'comedies'],
+    'Drama': ['drama'],
+    'Thriller & Sci-Fi': ['thriller', 'sci-fi', 'scifi', 'science fiction'],
+    'Animation & Family': ['animation', 'family', 'kids', 'cartoon'],
+  };
+
+  final rails = <HomeCategoryRail>[];
+  final usedCategoryIds = <int>{};
+
+  for (final entry in genreMatchers.entries) {
+    if (rails.length >= 3) break;
+    CategoriesTableData? match;
+    for (final cat in categories) {
+      if (cat.locked || usedCategoryIds.contains(cat.id)) continue;
+      final lower = cat.name.toLowerCase();
+      if (lower.contains('adult') ||
+          lower.contains('xxx') ||
+          lower.contains('18+')) {
+        continue;
+      }
+      if (entry.value.any((kw) => lower.contains(kw))) {
+        match = cat;
+        break;
+      }
+    }
+    if (match != null) {
+      final matchedId = match.id;
+      usedCategoryIds.add(matchedId);
+      final rows = await (db.select(db.contentItemsTable)
+            ..where((t) => t.playlistId.equals(playlistId))
+            ..where((t) => t.type.equals('movie'))
+            ..where((t) => t.categoryId.equals(matchedId))
+            ..limit(18))
+          .get();
+      if (rows.length >= 3) {
+        rails.add(
+          HomeCategoryRail(
+            title: entry.key,
+            items: rows.map(_toMediaItem).toList(),
+            route: '/movies',
+          ),
+        );
+      }
+    }
+  }
+
+  return rails;
 });
 
 final continueWatchingMediaProvider =
@@ -106,37 +190,47 @@ final continueWatchingMediaProvider =
   if (playlistId == null) return Stream.value([]);
 
   return db.watchContinueWatching(playlistId).asyncMap((positions) async {
-    final List<MediaItem> items = [];
-    for (final pos in positions) {
-      final content = await (db.select(db.contentItemsTable)
-            ..where((t) => t.playlistId.equals(pos.playlistId))
-            ..where((t) => t.providerId.equals(pos.contentProviderId))
-            ..where((t) => t.type
-                .equals(pos.contentType == 'episode' ? 'series' : 'movie')))
-          .getSingleOrNull();
+    if (positions.isEmpty) return [];
+    final providerIds =
+        positions.map((p) => p.contentProviderId).toSet().toList();
+    final contentRows = await (db.select(db.contentItemsTable)
+          ..where((t) => t.playlistId.equals(playlistId))
+          ..where((t) => t.providerId.isIn(providerIds)))
+        .get();
 
+    final byKey = <String, ContentItemsTableData>{
+      for (final c in contentRows) '${c.type}:${c.providerId}': c,
+    };
+
+    final items = <MediaItem>[];
+    for (final pos in positions) {
+      final expectedType = pos.contentType == 'episode' ? 'series' : 'movie';
+      final content = byKey['$expectedType:${pos.contentProviderId}'];
       if (content != null) {
-        items.add(MediaItem(
-          id: content.providerId,
-          title: content.title,
-          type: content.type == 'series' ? MediaType.series : MediaType.movie,
-          posterUrl: content.posterUrl,
-          backdropUrl: content.backdropUrl,
-          rating: content.rating,
-          releaseYear: content.releaseYear,
-          streamUrl: content.streamUrl,
-          playlistId: content.playlistId,
-          providerId: content.providerId,
-          contentDbId: content.id,
-          seriesProviderId: pos.seriesProviderId,
-          seasonNumber: pos.seasonNumber,
-          episodeNumber: pos.episodeNumber,
-          subtitle: pos.seasonNumber != null && pos.episodeNumber != null
-              ? 'S${pos.seasonNumber} E${pos.episodeNumber}'
-              : null,
-          positionSeconds: pos.positionSeconds,
-          durationSeconds: pos.durationSeconds ?? 0,
-        ));
+        items.add(
+          MediaItem(
+            id: content.providerId,
+            title: content.title,
+            type:
+                content.type == 'series' ? MediaType.series : MediaType.movie,
+            posterUrl: content.posterUrl,
+            backdropUrl: content.backdropUrl,
+            rating: content.rating,
+            releaseYear: content.releaseYear,
+            streamUrl: content.streamUrl,
+            playlistId: content.playlistId,
+            providerId: content.providerId,
+            contentDbId: content.id,
+            seriesProviderId: pos.seriesProviderId,
+            seasonNumber: pos.seasonNumber,
+            episodeNumber: pos.episodeNumber,
+            subtitle: pos.seasonNumber != null && pos.episodeNumber != null
+                ? 'S${pos.seasonNumber} E${pos.episodeNumber}'
+                : null,
+            positionSeconds: pos.positionSeconds,
+            durationSeconds: pos.durationSeconds ?? 0,
+          ),
+        );
       }
     }
     return items;
@@ -150,16 +244,22 @@ final homeFavoritesMediaProvider =
   if (playlistId == null) return Stream.value([]);
 
   return db.watchFavorites(playlistId).asyncMap((favs) async {
-    final List<MediaItem> items = [];
-    for (final f in favs) {
-      String? streamUrl;
-      if (f.contentId != null) {
-        final content = await (db.select(db.contentItemsTable)
-              ..where((t) => t.id.equals(f.contentId!)))
-            .getSingleOrNull();
-        streamUrl = content?.streamUrl;
+    if (favs.isEmpty) return [];
+    final contentIds =
+        favs.map((f) => f.contentId).whereType<int>().toSet().toList();
+    final contentMap = <int, ContentItemsTableData>{};
+    if (contentIds.isNotEmpty) {
+      final rows = await (db.select(db.contentItemsTable)
+            ..where((t) => t.id.isIn(contentIds)))
+          .get();
+      for (final r in rows) {
+        contentMap[r.id] = r;
       }
-      items.add(MediaItem(
+    }
+
+    return favs.map((f) {
+      final content = f.contentId != null ? contentMap[f.contentId!] : null;
+      return MediaItem(
         id: f.providerId,
         title: f.title,
         type: f.type == 'live'
@@ -167,18 +267,17 @@ final homeFavoritesMediaProvider =
             : (f.type == 'series' ? MediaType.series : MediaType.movie),
         posterUrl: f.posterUrl,
         backdropUrl: f.backdropUrl,
-        streamUrl: streamUrl,
+        streamUrl: content?.streamUrl,
         playlistId: f.playlistId,
         providerId: f.providerId,
         contentDbId: f.contentId,
-      ));
-    }
-    return items;
+      );
+    }).toList();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Home View - 100% Dynamic IPTV Experience
+// Home View - Mobile-First Cinematic Streaming Discovery
 // ---------------------------------------------------------------------------
 
 class HomeView extends ConsumerStatefulWidget {
@@ -210,27 +309,29 @@ class _HomeViewState extends ConsumerState<HomeView> {
 
   @override
   Widget build(BuildContext context) {
-    // Auto-resolve playlist if not already set
     ref.watch(effectivePlaylistIdProvider);
 
     final playerController = ref.read(playerControllerProvider.notifier);
     final db = ref.watch(databaseProvider);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isMobile = screenWidth < 768;
 
-    final moviesAsync = ref.watch(homeMoviesProvider);
-    final seriesAsync = ref.watch(homeSeriesProvider);
-    final latest2026Async = ref.watch(homeLatest2026Provider);
-    final continueWatchingAsync = ref.watch(continueWatchingMediaProvider);
-    final favoritesAsync = ref.watch(homeFavoritesMediaProvider);
-
-    final movies = moviesAsync.valueOrNull ?? [];
-    final series = seriesAsync.valueOrNull ?? [];
-    final latest2026 = latest2026Async.valueOrNull ?? [];
-    final continueItems = continueWatchingAsync.valueOrNull ?? [];
-    final favoriteItems = favoritesAsync.valueOrNull ?? [];
+    final movies = ref.watch(homeMoviesProvider).valueOrNull ?? [];
+    final popularMovies =
+        ref.watch(homePopularMoviesProvider).valueOrNull ?? [];
+    final series = ref.watch(homeSeriesProvider).valueOrNull ?? [];
+    final liveChannels = ref.watch(homeLiveTvProvider).valueOrNull ?? [];
+    final latestReleases = ref.watch(homeLatest2026Provider).valueOrNull ?? [];
+    final continueItems =
+        ref.watch(continueWatchingMediaProvider).valueOrNull ?? [];
+    final favoriteItems =
+        ref.watch(homeFavoritesMediaProvider).valueOrNull ?? [];
+    final genreRails = ref.watch(homeGenreRailsProvider).valueOrNull ?? [];
 
     final spotlightCandidates = <MediaItem>[
-      ...latest2026,
+      ...popularMovies,
       ...movies,
+      ...latestReleases,
       ...series,
       ...continueItems,
       ...favoriteItems,
@@ -241,13 +342,25 @@ class _HomeViewState extends ConsumerState<HomeView> {
           '${item.type.name}:${item.playlistId}:${item.providerId ?? item.id}';
       return seenSpotlightIds.add(key);
     }).toList();
-    final activeSpotlight = uniqueSpotlights.isEmpty
+    // Prefer items that have artwork for the hero banner
+    final withArtwork = uniqueSpotlights
+        .where((i) =>
+            (i.backdropUrl != null && i.backdropUrl!.isNotEmpty) ||
+            (i.posterUrl != null && i.posterUrl!.isNotEmpty))
+        .toList();
+    final spotlightPool = withArtwork.isNotEmpty ? withArtwork : uniqueSpotlights;
+    final activeSpotlight = spotlightPool.isEmpty
         ? null
-        : uniqueSpotlights[_spotlightIndex % uniqueSpotlights.length];
+        : spotlightPool[_spotlightIndex % spotlightPool.length];
 
     void playMedia(MediaItem item) {
-      if (item.type == MediaType.series &&
-          (item.streamUrl == null || item.streamUrl!.isEmpty)) {
+      final isUnresolvedSeries = item.type == MediaType.series &&
+          item.seasonNumber == null &&
+          item.episodeNumber == null;
+      final hasPlayableUrl =
+          item.streamUrl != null && item.streamUrl!.trim().isNotEmpty;
+
+      if (isUnresolvedSeries || !hasPlayableUrl) {
         AdaptiveDetailsCoordinator.showMediaItem(context, item);
       } else {
         playerController.playItem(item, startFullscreen: true);
@@ -275,219 +388,333 @@ class _HomeViewState extends ConsumerState<HomeView> {
       playerController.playItem(trailerMedia, startFullscreen: true);
     }
 
-    // If completely empty (no playlist content yet)
     if (activeSpotlight == null &&
         movies.isEmpty &&
         series.isEmpty &&
-        latest2026.isEmpty) {
+        liveChannels.isEmpty &&
+        latestReleases.isEmpty) {
       return Scaffold(
-        backgroundColor: const Color(0xFF0E0708),
+        backgroundColor: AppColors.background,
         body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: AppColors.primary.withValues(alpha: 0.35)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.14),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: AppColors.primary.withValues(alpha: 0.35),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.playlist_play_rounded,
+                    color: AppColors.primary,
+                    size: 36,
+                  ),
                 ),
-                child: const Icon(Icons.playlist_play_rounded,
-                    color: AppColors.primary, size: 36),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'No Playlist Connected',
-                style: TextStyle(
+                const SizedBox(height: 18),
+                const Text(
+                  'No Playlist Connected',
+                  style: TextStyle(
                     color: Colors.white,
                     fontSize: 20,
-                    fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Go to Settings > My Playlists & IPTV Providers to add your Xtream or M3U playlist.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.55), fontSize: 13),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                onPressed: () => context.go('/settings'),
-                icon: const Icon(Icons.settings_rounded, size: 16),
-                label: const Text('Open Settings'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 8),
+                Text(
+                  'Add your Xtream Codes, Stalker Portal, or M3U playlist in Settings to start streaming.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.6),
+                    fontSize: 13.5,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                ElevatedButton.icon(
+                  onPressed: () => context.go('/settings'),
+                  icon: const Icon(Icons.add_circle_outline_rounded, size: 18),
+                  label: const Text('Add Playlist'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 13,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       );
     }
 
+    final horizontalPadding = isMobile ? 16.0 : 28.0;
+    final double cardWidth = screenWidth < 380
+        ? 106
+        : (isMobile ? 118 : 148);
+    final double cardHeight = cardWidth * 1.5;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF0E0708), // Dark wine-tinted charcoal
-      body: SingleChildScrollView(
+      backgroundColor: AppColors.background,
+      body: CustomScrollView(
         controller: _scrollController,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── 1. Dynamic Full-Bleed Edge-to-Edge Hero Spotlight ──
-            if (activeSpotlight != null)
-              Builder(
-                builder: (context) {
-                  final spotlight = activeSpotlight;
-                  return AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 800),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) => FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0.02, 0),
-                          end: Offset.zero,
-                        ).animate(animation),
-                        child: child,
-                      ),
-                    ),
-                    child: StreamBuilder<bool>(
-                      key: ValueKey(
-                        '${spotlight.type.name}:${spotlight.playlistId}:${spotlight.providerId ?? spotlight.id}',
-                      ),
-                      stream: (spotlight.playlistId != null &&
-                              spotlight.providerId != null)
-                          ? db.watchIsFavorite(
-                              spotlight.playlistId!,
-                              spotlight.type == MediaType.series
-                                  ? 'series'
-                                  : (spotlight.type == MediaType.live
-                                      ? 'live'
-                                      : 'movie'),
-                              spotlight.providerId!,
-                            )
-                          : Stream.value(false),
-                      builder: (context, snap) {
-                        final isFav = snap.data ?? false;
-                        return FlixorHeroSpotlight(
-                          item: spotlight,
-                          onPlay: () {
-                            if (spotlight.type == MediaType.series &&
-                                (spotlight.streamUrl == null ||
-                                    spotlight.streamUrl!.isEmpty)) {
-                              openContentDetail(spotlight);
-                            } else {
-                              playMedia(spotlight);
-                            }
-                          },
-                          onMoreInfo: () => openContentDetail(spotlight),
-                          isFavorite: isFav,
-                          onToggleMyList: () async {
-                            if (spotlight.playlistId != null &&
-                                spotlight.providerId != null) {
-                              await db.toggleFavorite(
-                                FavoritesTableCompanion(
-                                  playlistId:
-                                      drift.Value(spotlight.playlistId!),
-                                  contentId: drift.Value(spotlight.contentDbId),
-                                  providerId:
-                                      drift.Value(spotlight.providerId!),
-                                  type: drift.Value(
-                                      spotlight.type == MediaType.series
-                                          ? 'series'
-                                          : (spotlight.type == MediaType.live
-                                              ? 'live'
-                                              : 'movie')),
-                                  title: drift.Value(spotlight.title),
-                                  posterUrl: drift.Value(spotlight.posterUrl),
-                                  backdropUrl:
-                                      drift.Value(spotlight.backdropUrl),
-                                ),
-                              );
-                            }
-                          },
-                          onPlayTrailer: playTrailer,
-                        );
-                      },
-                    ),
-                  );
-                },
-              ),
-
-            const SizedBox(height: 20),
-
-            // ── 1. "Continue Watching" Rail (Real In-Progress Positions) ──
-            if (continueItems.isNotEmpty) ...[
-              _buildRailSection(
-                title: 'Continue Watching',
-                items: continueItems,
-                showProgress: true,
-                onSelect: playMedia,
-              ),
-              const SizedBox(height: 26),
-            ],
-
-            // ── 2. "My List" Rail (Real Favorites Bookmarks) ──
-            if (favoriteItems.isNotEmpty) ...[
-              _buildRailSection(
-                title: 'My List (${favoriteItems.length})',
-                items: favoriteItems,
-                onHeaderTap: () => context.go('/favorites'),
-                onSelect: openContentDetail,
-              ),
-              const SizedBox(height: 26),
-            ],
-
-            // ── 3. Movies & Blockbusters ──
-            if (movies.isNotEmpty) ...[
-              _buildRailSection(
-                title: 'Movies & Blockbusters (${movies.length})',
-                items: movies,
-                onHeaderTap: () => context.go('/movies'),
-                onSelect: openContentDetail,
-              ),
-              const SizedBox(height: 26),
-            ],
-
-            // ── 4. TV Shows & Series ──
-            if (series.isNotEmpty) ...[
-              _buildRailSection(
-                title: 'TV Shows & Series (${series.length})',
-                items: series,
-                onHeaderTap: () => context.go('/series'),
-                onSelect: openContentDetail,
-              ),
-              const SizedBox(height: 26),
-            ],
-
-            // ── 5. Latest Releases ──
-            if (latest2026.isNotEmpty) ...[
-              _buildRailSection(
-                title: 'Latest Releases (${latest2026.length})',
-                items: latest2026,
-                onSelect: openContentDetail,
-              ),
-              const SizedBox(height: 26),
-            ],
-
-            const SizedBox(height: 80),
-          ],
+        physics: const BouncingScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
         ),
+        slivers: [
+          // 1. Cinematic Hero Spotlight
+          if (activeSpotlight != null)
+            SliverToBoxAdapter(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 700),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: StreamBuilder<bool>(
+                  key: ValueKey(
+                    '${activeSpotlight.type.name}:${activeSpotlight.playlistId}:${activeSpotlight.providerId ?? activeSpotlight.id}',
+                  ),
+                  stream: (activeSpotlight.playlistId != null &&
+                          activeSpotlight.providerId != null)
+                      ? db.watchIsFavorite(
+                          activeSpotlight.playlistId!,
+                          activeSpotlight.type == MediaType.series
+                              ? 'series'
+                              : (activeSpotlight.type == MediaType.live
+                                  ? 'live'
+                                  : 'movie'),
+                          activeSpotlight.providerId!,
+                        )
+                      : Stream.value(false),
+                  builder: (context, snap) {
+                    final isFav = snap.data ?? false;
+                    return FlixorHeroSpotlight(
+                      item: activeSpotlight,
+                      onPlay: () => playMedia(activeSpotlight),
+                      onMoreInfo: () => openContentDetail(activeSpotlight),
+                      isFavorite: isFav,
+                      onToggleMyList: () async {
+                        if (activeSpotlight.playlistId != null &&
+                            activeSpotlight.providerId != null) {
+                          await db.toggleFavorite(
+                            FavoritesTableCompanion(
+                              playlistId:
+                                  drift.Value(activeSpotlight.playlistId!),
+                              contentId:
+                                  drift.Value(activeSpotlight.contentDbId),
+                              providerId:
+                                  drift.Value(activeSpotlight.providerId!),
+                              type: drift.Value(
+                                activeSpotlight.type == MediaType.series
+                                    ? 'series'
+                                    : (activeSpotlight.type == MediaType.live
+                                        ? 'live'
+                                        : 'movie'),
+                              ),
+                              title: drift.Value(activeSpotlight.title),
+                              posterUrl:
+                                  drift.Value(activeSpotlight.posterUrl),
+                              backdropUrl:
+                                  drift.Value(activeSpotlight.backdropUrl),
+                            ),
+                          );
+                        }
+                      },
+                      onPlayTrailer: playTrailer,
+                    );
+                  },
+                ),
+              ),
+            ),
+
+          SliverPadding(
+            padding: const EdgeInsets.only(top: 12, bottom: 96),
+            sliver: SliverList(
+              delegate: SliverChildListDelegate([
+                // 1. Continue Watching
+                if (continueItems.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'Continue Watching',
+                    items: continueItems,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    showProgress: true,
+                    onSelect: playMedia,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 2. Trending & Recently Added
+                if (latestReleases.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'Trending & Recently Added',
+                    items: latestReleases,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go('/movies'),
+                    onSelect: openContentDetail,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 3. Popular Movies
+                if (popularMovies.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'Popular Movies',
+                    items: popularMovies,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go('/movies'),
+                    onSelect: openContentDetail,
+                  ),
+                  const SizedBox(height: 22),
+                ] else if (movies.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'Movies',
+                    items: movies,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go('/movies'),
+                    onSelect: openContentDetail,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 4. TV Series
+                if (series.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'TV Series',
+                    items: series,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go('/series'),
+                    onSelect: openContentDetail,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 5. Live TV Channels
+                if (liveChannels.isNotEmpty) ...[
+                  _buildLiveTvRail(
+                    title: 'Live TV',
+                    channels: liveChannels,
+                    horizontalPadding: horizontalPadding,
+                    onHeaderTap: () => context.go('/live'),
+                    onSelect: playMedia,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 6. Dynamic Genre Carousels from Playlist Categories
+                for (final rail in genreRails) ...[
+                  _buildPosterRail(
+                    title: rail.title,
+                    items: rail.items,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go(rail.route),
+                    onSelect: openContentDetail,
+                  ),
+                  const SizedBox(height: 22),
+                ],
+
+                // 7. Your Watchlist / My List
+                if (favoriteItems.isNotEmpty) ...[
+                  _buildPosterRail(
+                    title: 'Your Watchlist',
+                    items: favoriteItems,
+                    horizontalPadding: horizontalPadding,
+                    cardWidth: cardWidth,
+                    cardHeight: cardHeight,
+                    onHeaderTap: () => context.go('/favorites'),
+                    onSelect: openContentDetail,
+                  ),
+                ],
+              ]),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildRailSection({
+  Widget _buildSectionHeader({
+    required String title,
+    required double horizontalPadding,
+    VoidCallback? onHeaderTap,
+  }) {
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ),
+          if (onHeaderTap != null)
+            InkWell(
+              onTap: onHeaderTap,
+              borderRadius: BorderRadius.circular(6),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'See All',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    SizedBox(width: 2),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppColors.textSecondary,
+                      size: 16,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPosterRail({
     required String title,
     required List<MediaItem> items,
+    required double horizontalPadding,
+    required double cardWidth,
+    required double cardHeight,
     required ValueChanged<MediaItem> onSelect,
     VoidCallback? onHeaderTap,
     bool showProgress = false,
@@ -495,50 +722,26 @@ class _HomeViewState extends ConsumerState<HomeView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Section Title
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: InkWell(
-            onTap: onHeaderTap,
-            borderRadius: BorderRadius.circular(6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.2,
-                  ),
-                ),
-                if (onHeaderTap != null) ...[
-                  const SizedBox(width: 8),
-                  const Icon(
-                    Icons.arrow_forward_ios_rounded,
-                    color: Colors.white54,
-                    size: 13,
-                  ),
-                ],
-              ],
-            ),
-          ),
+        _buildSectionHeader(
+          title: title,
+          horizontalPadding: horizontalPadding,
+          onHeaderTap: onHeaderTap,
         ),
-        const SizedBox(height: 12),
-
-        // Horizontal Poster Rail
+        const SizedBox(height: 10),
         SizedBox(
-          height: 215,
+          height: cardHeight,
           child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
+            padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
             scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
             itemCount: items.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 14),
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
             itemBuilder: (context, index) {
               final item = items[index];
               return _FlixorPosterCard(
                 item: item,
+                width: cardWidth,
+                height: cardHeight,
                 showProgress: showProgress,
                 onTap: () => onSelect(item),
               );
@@ -548,19 +751,159 @@ class _HomeViewState extends ConsumerState<HomeView> {
       ],
     );
   }
+
+  Widget _buildLiveTvRail({
+    required String title,
+    required List<MediaItem> channels,
+    required double horizontalPadding,
+    required ValueChanged<MediaItem> onSelect,
+    VoidCallback? onHeaderTap,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSectionHeader(
+          title: title,
+          horizontalPadding: horizontalPadding,
+          onHeaderTap: onHeaderTap,
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 104,
+          child: ListView.separated(
+            padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
+            scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
+            itemCount: channels.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 10),
+            itemBuilder: (context, index) {
+              final ch = channels[index];
+              return _LiveChannelRailCard(
+                item: ch,
+                onTap: () => onSelect(ch),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LiveChannelRailCard extends StatelessWidget {
+  final MediaItem item;
+  final VoidCallback onTap;
+
+  const _LiveChannelRailCard({
+    required this.item,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(10),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        splashColor: AppColors.primary.withValues(alpha: 0.16),
+        child: Container(
+          width: 156,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceElevated,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: (item.posterUrl != null && item.posterUrl!.isNotEmpty)
+                      ? CachedNetworkImage(
+                          imageUrl: item.posterUrl!,
+                          fit: BoxFit.contain,
+                          errorWidget: (_, __, ___) => const Icon(
+                            Icons.live_tv_rounded,
+                            color: AppColors.textMuted,
+                            size: 20,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.live_tv_rounded,
+                          color: AppColors.textMuted,
+                          size: 20,
+                        ),
+                ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.circle, color: AppColors.primary, size: 6),
+                      SizedBox(width: 4),
+                      Text(
+                        'LIVE',
+                        style: TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const Spacer(),
+            Text(
+              item.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        ),
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Clean, Modern Poster Card Matching Design Reference
+// Clean, Artwork-First Poster Card
 // ---------------------------------------------------------------------------
 class _FlixorPosterCard extends StatefulWidget {
   final MediaItem item;
   final VoidCallback onTap;
+  final double width;
+  final double height;
   final bool showProgress;
 
   const _FlixorPosterCard({
     required this.item,
     required this.onTap,
+    required this.width,
+    required this.height,
     this.showProgress = false,
   });
 
@@ -577,6 +920,7 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
+    final hasPoster = item.posterUrl != null && item.posterUrl!.isNotEmpty;
 
     return FocusableActionDetector(
       onFocusChange: (f) => setState(() => _isFocused = f),
@@ -589,46 +933,27 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
       child: GestureDetector(
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 160),
           curve: Curves.easeOutCubic,
-          width: 142,
-          height: 212,
-          transform: Matrix4.diagonal3Values(
-            _isFocused ? 1.05 : (_isHovered ? 1.03 : 1.0),
-            _isFocused ? 1.05 : (_isHovered ? 1.03 : 1.0),
-            1.0,
-          ),
+          width: widget.width,
+          height: widget.height,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: _isFocused
                   ? Colors.white
                   : (_isHovered
                       ? AppColors.primary
-                      : Colors.white.withValues(alpha: 0.08)),
-              width: _isFocused ? 2.2 : (_isHovered ? 1.5 : 0.8),
+                      : Colors.white.withValues(alpha: 0.06)),
+              width: _isFocused ? 2 : (_isHovered ? 1.4 : 0.8),
             ),
-            boxShadow: [
-              if (_isActive)
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.45),
-                  blurRadius: 18,
-                  offset: const Offset(0, 6),
-                )
-              else
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  blurRadius: 8,
-                  offset: const Offset(0, 4),
-                ),
-            ],
           ),
           clipBehavior: Clip.antiAlias,
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Poster Image with User-Agent headers
-              if (item.posterUrl != null && item.posterUrl!.isNotEmpty)
+              if (hasPoster)
                 CachedNetworkImage(
                   imageUrl: item.posterUrl!,
                   httpHeaders: const {
@@ -642,77 +967,74 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
               else
                 _buildFallback(item),
 
-              // Bottom Title Scrim
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                height: 65,
-                child: Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.9),
-                        Colors.transparent,
-                      ],
+              // Continue Watching overlay (play icon + episode subtitle + progress bar)
+              if (widget.showProgress) ...[
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: 54,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.bottomCenter,
+                        end: Alignment.topCenter,
+                        colors: [
+                          Colors.black.withValues(alpha: 0.9),
+                          Colors.transparent,
+                        ],
+                      ),
                     ),
-                  ),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  alignment: Alignment.bottomLeft,
-                  child: Text(
-                    item.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                    alignment: Alignment.bottomLeft,
+                    child: Text(
+                      item.subtitle ?? item.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),
-              ),
+                if (item.durationSeconds > 0 && item.positionSeconds > 0)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: LinearProgressIndicator(
+                      value: (item.positionSeconds / item.durationSeconds)
+                          .clamp(0.0, 1.0),
+                      backgroundColor: Colors.white24,
+                      color: AppColors.primary,
+                      minHeight: 3.5,
+                    ),
+                  ),
+              ],
 
-              // Play icon overlay on hover/focus
+              // Subtle play badge on hover/focus (desktop/TV)
               if (_isActive)
                 Container(
-                  color: Colors.black.withValues(alpha: 0.35),
+                  color: Colors.black.withValues(alpha: 0.3),
                   child: Center(
                     child: Container(
-                      width: 40,
-                      height: 40,
+                      width: 38,
+                      height: 38,
                       decoration: BoxDecoration(
                         color: _isFocused
                             ? AppColors.primary
-                            : Colors.black.withValues(alpha: 0.7),
+                            : Colors.black.withValues(alpha: 0.72),
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 1.5),
                       ),
                       child: const Icon(
                         Icons.play_arrow_rounded,
                         color: Colors.white,
-                        size: 24,
+                        size: 22,
                       ),
                     ),
-                  ),
-                ),
-
-              // Progress Bar if continue watching
-              if (widget.showProgress &&
-                  item.durationSeconds > 0 &&
-                  item.positionSeconds > 0)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: LinearProgressIndicator(
-                    value: (item.positionSeconds / item.durationSeconds)
-                        .clamp(0.0, 1.0),
-                    backgroundColor: Colors.white12,
-                    color: AppColors.primary,
-                    minHeight: 3.5,
                   ),
                 ),
             ],
@@ -724,21 +1046,17 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
 
   Widget _buildFallback(MediaItem item, {bool isLoading = false}) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF281318), Color(0xFF160A0D), Color(0xFF0F0608)],
-        ),
-      ),
+      color: AppColors.surfaceElevated,
       padding: const EdgeInsets.all(10),
       child: Center(
         child: isLoading
             ? const SizedBox(
-                width: 22,
-                height: 22,
+                width: 20,
+                height: 20,
                 child: CircularProgressIndicator(
-                    color: AppColors.primary, strokeWidth: 2),
+                  color: AppColors.primary,
+                  strokeWidth: 2,
+                ),
               )
             : Column(
                 mainAxisSize: MainAxisSize.min,
@@ -750,7 +1068,7 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
                             ? Icons.tv_rounded
                             : Icons.movie_rounded),
                     color: Colors.white24,
-                    size: 32,
+                    size: 28,
                   ),
                   const SizedBox(height: 8),
                   Text(
@@ -761,7 +1079,7 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
                     style: const TextStyle(
                       color: Colors.white70,
                       fontSize: 11,
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
                 ],

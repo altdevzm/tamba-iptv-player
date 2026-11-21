@@ -3,13 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/persistence/app_database.dart';
 import '../../../../core/persistence/database_provider.dart';
 import '../../../../shared/models/media_item.dart';
 import '../../../player/data/player_controller.dart';
+import '../../../player/presentation/widgets/engine_video_surface.dart';
 import '../../../epg/data/epg_repository_impl.dart';
 import '../../../epg/presentation/reminders_dialog.dart';
 
@@ -74,7 +74,6 @@ class _MobileLiveTvPreviewSheetState
   @override
   Widget build(BuildContext context) {
     final playerState = ref.watch(playerControllerProvider);
-    final playerController = ref.read(playerControllerProvider.notifier);
     final db = ref.watch(databaseProvider);
     final epgRepo = EpgRepositoryImpl(
       db: db,
@@ -118,10 +117,7 @@ class _MobileLiveTvPreviewSheetState
                   fit: StackFit.expand,
                   children: [
                     Container(color: Colors.black),
-                    Video(
-                      controller: playerController.videoController,
-                      controls: NoVideoControls,
-                    ),
+                    const EngineVideoSurface(),
                     if (playerState.isBuffering)
                       const Center(
                         child: CircularProgressIndicator(

@@ -51,24 +51,28 @@ Future<List<ParsedChannel>> parseM3u(String content) {
 List<ParsedChannel> _parseM3uSync(String content) {
   final results = <ParsedChannel>[];
 
-  // Normalise line endings and split.
-  final lines = content.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+  // Strip UTF-8 BOM if present, normalise line endings and split.
+  final cleaned = content.startsWith('\uFEFF') ? content.substring(1) : content;
+  final lines = cleaned.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
 
-  // Buffer for #KODIPROP lines that precede an #EXTINF line.
+  // Buffer for #KODIPROP / #EXTVLCOPT / #EXTGRP lines associated with an entry.
   final kodiProps = <String, String>{};
-
+  final vlcHeaders = <String, String>{};
   String? pendingExtinf; // raw #EXTINF line waiting for its URL
+  String? pendingExtGrp; // #EXTGRP fallback group name
 
   for (var i = 0; i < lines.length; i++) {
     final raw = lines[i].trim();
     if (raw.isEmpty) continue;
 
+    final upper = raw.toUpperCase();
+
     // ── Header ──────────────────────────────────────────────────────────────
-    if (raw.startsWith('#EXTM3U')) continue;
+    if (upper.startsWith('#EXTM3U')) continue;
 
     // ── KODIPROP ─────────────────────────────────────────────────────────────
     // Format: #KODIPROP:inputstream.adaptive.manifest_type=mpd
-    if (raw.startsWith('#KODIPROP:')) {
+    if (upper.startsWith('#KODIPROP:')) {
       final kv = raw.substring('#KODIPROP:'.length);
       final eqIdx = kv.indexOf('=');
       if (eqIdx > 0) {
@@ -79,8 +83,33 @@ List<ParsedChannel> _parseM3uSync(String content) {
       continue;
     }
 
+    // ── EXTVLCOPT ────────────────────────────────────────────────────────────
+    // Format: #EXTVLCOPT:http-user-agent=VLC/3.0
+    if (upper.startsWith('#EXTVLCOPT:')) {
+      final kv = raw.substring('#EXTVLCOPT:'.length);
+      final eqIdx = kv.indexOf('=');
+      if (eqIdx > 0) {
+        final key = kv.substring(0, eqIdx).trim().toLowerCase();
+        final value = kv.substring(eqIdx + 1).trim();
+        if (key == 'http-user-agent' && value.isNotEmpty) {
+          vlcHeaders['User-Agent'] = value;
+        } else if (key == 'http-referrer' && value.isNotEmpty) {
+          vlcHeaders['Referer'] = value;
+        }
+      }
+      continue;
+    }
+
+    // ── EXTGRP ───────────────────────────────────────────────────────────────
+    // Format: #EXTGRP:Sports
+    if (upper.startsWith('#EXTGRP:')) {
+      final grp = raw.substring('#EXTGRP:'.length).trim();
+      if (grp.isNotEmpty) pendingExtGrp = grp;
+      continue;
+    }
+
     // ── #EXTINF ───────────────────────────────────────────────────────────────
-    if (raw.startsWith('#EXTINF:')) {
+    if (upper.startsWith('#EXTINF:') || upper.startsWith('#EXTINF ')) {
       pendingExtinf = raw;
       continue;
     }
@@ -95,13 +124,17 @@ List<ParsedChannel> _parseM3uSync(String content) {
         extinf: pendingExtinf,
         rawUrl: raw,
         kodiProps: Map<String, String>.from(kodiProps),
+        vlcHeaders: Map<String, String>.from(vlcHeaders),
+        extGrp: pendingExtGrp,
       );
       if (channel != null) results.add(channel);
     }
 
     // Reset state for next entry regardless of whether we got a valid channel.
     pendingExtinf = null;
+    pendingExtGrp = null;
     kodiProps.clear();
+    vlcHeaders.clear();
   }
 
   return results;
@@ -117,21 +150,26 @@ ParsedChannel? _buildChannel({
   required String extinf,
   required String rawUrl,
   required Map<String, String> kodiProps,
+  Map<String, String> vlcHeaders = const {},
+  String? extGrp,
 }) {
   try {
     // ── Split URL at pipe boundary ───────────────────────────────────────────
     final streamUrl = _extractStreamUrl(rawUrl);
     if (streamUrl.isEmpty) return null;
-    final streamHeaders = _extractPipeHeaders(rawUrl);
+    final pipeHeaders = _extractPipeHeaders(rawUrl);
+    final streamHeaders = <String, String>{
+      ...vlcHeaders,
+      ...pipeHeaders,
+    };
 
     // ── Parse #EXTINF attributes ─────────────────────────────────────────────
     // Format: #EXTINF:<duration> attr1="val1" attr2="val2",Title
-    final commaIdx = extinf.lastIndexOf(',');
-    final title = commaIdx >= 0 ? extinf.substring(commaIdx + 1).trim() : '';
-
-    final attrSection = commaIdx >= 0
-        ? extinf.substring('#EXTINF:'.length, commaIdx)
-        : extinf.substring('#EXTINF:'.length);
+    final prefixLen = extinf.length >= 8 ? 8 : extinf.length;
+    final body = extinf.substring(prefixLen);
+    final commaIdx = _findTitleCommaIndex(body);
+    final title = commaIdx >= 0 ? body.substring(commaIdx + 1).trim() : '';
+    final attrSection = commaIdx >= 0 ? body.substring(0, commaIdx) : body;
 
     final attrs = _parseAttributes(attrSection);
 
@@ -141,12 +179,14 @@ ParsedChannel? _buildChannel({
 
     final tvgShiftRaw = double.tryParse(attrs['tvg-shift'] ?? '');
 
+    final groupTitle = _emptyToNull(attrs['group-title']) ?? _emptyToNull(extGrp);
+
     return ParsedChannel(
       title: title.isNotEmpty ? title : (attrs['tvg-name'] ?? 'Unknown'),
       tvgId: _emptyToNull(attrs['tvg-id']),
       tvgName: _emptyToNull(attrs['tvg-name']),
       logoUrl: _emptyToNull(attrs['tvg-logo']),
-      groupTitle: _emptyToNull(attrs['group-title']),
+      groupTitle: groupTitle,
       isRadio: isRadio,
       catchupType: _emptyToNull(attrs['catchup']),
       catchupDays: catchupDaysRaw,
@@ -160,6 +200,23 @@ ParsedChannel? _buildChannel({
     // Never crash on a malformed entry — just skip it.
     return null;
   }
+}
+
+/// Finds the comma separating `#EXTINF` attributes from the channel title,
+/// ignoring commas enclosed inside single or double quotes.
+int _findTitleCommaIndex(String body) {
+  String? activeQuote;
+  for (var i = 0; i < body.length; i++) {
+    final ch = body[i];
+    if (activeQuote != null) {
+      if (ch == activeQuote) activeQuote = null;
+    } else if (ch == '"' || ch == "'") {
+      activeQuote = ch;
+    } else if (ch == ',') {
+      return i;
+    }
+  }
+  return -1;
 }
 
 /// Extracts the stream URL from a raw URL line, stripping any pipe parameters.

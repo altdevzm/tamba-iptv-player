@@ -17,10 +17,26 @@ class StalkerNotifier extends AsyncNotifier<void> {
   }
 
   Future<void> importPlaylist(String playlistId, StalkerCredentials creds) async {
+    ref.read(isSyncingPlaylistProvider.notifier).state = true;
+    ref.read(playlistSyncStatusProvider.notifier).state =
+        'Connecting to Stalker portal...';
     state = const AsyncLoading();
-    state = await AsyncValue.guard(
-      () => _repository.importStalkerPlaylist(playlistId, creds),
-    );
+    try {
+      await _repository.importStalkerPlaylist(
+        playlistId,
+        creds,
+        onProgress: (status) {
+          ref.read(playlistSyncStatusProvider.notifier).state = status;
+        },
+      );
+      state = const AsyncData(null);
+    } catch (e, st) {
+      state = AsyncError(e, st);
+      rethrow;
+    } finally {
+      ref.read(isSyncingPlaylistProvider.notifier).state = false;
+      ref.read(playlistSyncStatusProvider.notifier).state = null;
+    }
   }
 }
 

@@ -13,6 +13,9 @@ import '../../../core/persistence/database_provider.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../shared/widgets/glass_container.dart';
 import '../../epg/presentation/epg_notifier.dart';
+import '../../player/data/libvlc_bridge.dart';
+import '../../player/data/player_controller.dart';
+import '../../player/domain/playback_enums.dart';
 import '../../../shared/services/tmdb_service.dart';
 import '../data/backup_service.dart';
 import '../../remote_control/data/remote_control_server.dart';
@@ -69,7 +72,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
     final lang = await tmdb.getLanguage();
     final country = await tmdb.getCertificationCountry();
     final ua = await storage.getPlaylistCredentials('filimu_custom_user_agent');
-    final refHeader = await storage.getPlaylistCredentials('filimu_custom_referer');
+    final refHeader =
+        await storage.getPlaylistCredentials('filimu_custom_referer');
 
     if (mounted) {
       if (key != null) _tmdbKeyController.text = key;
@@ -118,7 +122,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             const SizedBox(height: 4),
             Text(
               'Configure your Tamba IPTV experience',
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 13),
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.6), fontSize: 13),
             ),
 
             const SizedBox(height: 32),
@@ -133,7 +138,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             _buildSectionHeader('Electronic Programme Guide (EPG)'),
             const SizedBox(height: 14),
             GlassContainer(
-              padding: const EdgeInsets.all(24),
+              padding: EdgeInsets.all(isMobile ? 16 : 24),
               borderRadius: 16,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -155,22 +160,22 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildTextField(
-                          _epgUrlController,
-                          'EPG URL',
-                          'https://example.com/epg.xml.gz',
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      ElevatedButton(
+                  if (isMobile) ...[
+                    _buildTextField(
+                      _epgUrlController,
+                      'EPG URL',
+                      'https://example.com/epg.xml.gz',
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
                         onPressed: _epgLoading ? null : _importEpg,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 14),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -186,13 +191,48 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                               )
                             : const Text('Import EPG'),
                       ),
-                    ],
-                  ),
+                    ),
+                  ] else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildTextField(
+                            _epgUrlController,
+                            'EPG URL',
+                            'https://example.com/epg.xml.gz',
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton(
+                          onPressed: _epgLoading ? null : _importEpg,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: _epgLoading
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Import EPG'),
+                        ),
+                      ],
+                    ),
                   if (_epgError != null) ...[
                     const SizedBox(height: 10),
                     Text(
                       _epgError!,
-                      style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                      style: const TextStyle(
+                          color: Colors.redAccent, fontSize: 12),
                     ),
                   ],
                 ],
@@ -205,7 +245,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             _buildSectionHeader('Metadata Enrichment (TMDB)'),
             const SizedBox(height: 14),
             GlassContainer(
-              padding: const EdgeInsets.all(24),
+              padding: EdgeInsets.all(isMobile ? 16 : 24),
               borderRadius: 16,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -227,131 +267,68 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildTextField(
-                          _tmdbKeyController,
-                          'TMDB API Key',
-                          'Enter your 32-character TMDB v3 API Key',
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      ElevatedButton(
-                        onPressed: () async {
-                          final messenger = ScaffoldMessenger.of(context);
-                          final key = _tmdbKeyController.text.trim();
-                          final tmdb = ref.read(tmdbServiceProvider);
-                          await tmdb.saveApiKey(key);
-                          if (mounted) {
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('TMDB API Key saved successfully'),
-                                backgroundColor: Colors.green,
-                              ),
-                            );
-                          }
-                        },
+                  if (isMobile) ...[
+                    _buildTextField(
+                      _tmdbKeyController,
+                      'TMDB API Key',
+                      'Enter your 32-character TMDB v3 API Key',
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _saveTmdbKey,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 14),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
                         ),
                         child: const Text('Save Key'),
                       ),
-                    ],
-                  ),
+                    ),
+                  ] else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildTextField(
+                            _tmdbKeyController,
+                            'TMDB API Key',
+                            'Enter your 32-character TMDB v3 API Key',
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton(
+                          onPressed: _saveTmdbKey,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          child: const Text('Save Key'),
+                        ),
+                      ],
+                    ),
                   const SizedBox(height: 18),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Metadata Language',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.8),
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _languages.containsKey(_selectedLanguage) ? _selectedLanguage : 'en-US',
-                                  dropdownColor: const Color(0xFF1E1E1E),
-                                  isExpanded: true,
-                                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                                  items: _languages.entries.map((e) {
-                                    return DropdownMenuItem(value: e.key, child: Text(e.value));
-                                  }).toList(),
-                                  onChanged: (val) async {
-                                    if (val != null) {
-                                      setState(() => _selectedLanguage = val);
-                                      await ref.read(tmdbServiceProvider).saveLanguage(val);
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Age Certification Country',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.8),
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 14),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _countries.containsKey(_selectedCountry) ? _selectedCountry : 'US',
-                                  dropdownColor: const Color(0xFF1E1E1E),
-                                  isExpanded: true,
-                                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                                  items: _countries.entries.map((e) {
-                                    return DropdownMenuItem(value: e.key, child: Text(e.value));
-                                  }).toList(),
-                                  onChanged: (val) async {
-                                    if (val != null) {
-                                      setState(() => _selectedCountry = val);
-                                      await ref.read(tmdbServiceProvider).saveCertificationCountry(val);
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                  if (isMobile) ...[
+                    _buildLanguageDropdown(),
+                    const SizedBox(height: 14),
+                    _buildCountryDropdown(),
+                  ] else
+                    Row(
+                      children: [
+                        Expanded(child: _buildLanguageDropdown()),
+                        const SizedBox(width: 16),
+                        Expanded(child: _buildCountryDropdown()),
+                      ],
+                    ),
                   const SizedBox(height: 14),
                   Text(
                     'Attribution: This product uses the TMDB API but is not endorsed or certified by TMDB.',
@@ -371,10 +348,15 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             _buildSectionHeader('Playback'),
             const SizedBox(height: 14),
             GlassContainer(
-              padding: const EdgeInsets.all(24),
+              padding: EdgeInsets.all(isMobile ? 16 : 24),
               borderRadius: 16,
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  if (LibVlcBridge.isSupported) ...[
+                    _buildPlaybackEngineSelector(),
+                    _buildDivider(),
+                  ],
                   _buildSwitchRow(
                     'Auto-Resume',
                     'Resume playback from where you left off',
@@ -453,44 +435,93 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   const Text(
                     'Embedded Web Remote Controller',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'Control playback from any smartphone or tablet on the same Wi-Fi network.',
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 12),
                   ),
                   const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.06),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                          ),
-                          child: const SelectableText(
-                            'http://localhost:8383',
-                            style: TextStyle(color: AppColors.primary, fontFamily: 'monospace', fontWeight: FontWeight.bold),
-                          ),
-                        ),
+                  if (isMobile) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.1)),
                       ),
-                      const SizedBox(width: 12),
-                      ElevatedButton.icon(
+                      child: const SelectableText(
+                        'http://localhost:8383',
+                        style: TextStyle(
+                            color: AppColors.primary,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
                         onPressed: _showQrCodeDialog,
                         icon: const Icon(Icons.qr_code_rounded, size: 18),
                         label: const Text('Show QR Code'),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10)),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ] else
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.1)),
+                            ),
+                            child: const SelectableText(
+                              'http://localhost:8383',
+                              style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontFamily: 'monospace',
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton.icon(
+                          onPressed: _showQrCodeDialog,
+                          icon: const Icon(Icons.qr_code_rounded, size: 18),
+                          label: const Text('Show QR Code'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 14),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10)),
+                          ),
+                        ),
+                      ],
+                    ),
                 ],
               ),
             ),
@@ -508,25 +539,34 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   const Text(
                     'Custom HTTP Stream Headers',
-                    style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'Override User-Agent and Referer sent to IPTV streams and EPG providers.',
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 12),
                   ),
                   const SizedBox(height: 16),
-                  _buildTextField(_userAgentController, 'Global User-Agent', 'e.g. VLC/3.0.18 LibVLC/3.0.18'),
+                  _buildTextField(_userAgentController, 'Global User-Agent',
+                      'e.g. VLC/3.0.18 LibVLC/3.0.18'),
                   const SizedBox(height: 12),
-                  _buildTextField(_refererController, 'Global HTTP Referer', 'e.g. https://provider.domain/'),
+                  _buildTextField(_refererController, 'Global HTTP Referer',
+                      'e.g. https://provider.domain/'),
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: _saveCustomHeaders,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
                     ),
                     child: const Text('Save Stream Headers'),
                   ),
@@ -550,7 +590,12 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                   _buildDivider(),
                   _buildInfoRow('Built With', 'Flutter + Dart'),
                   _buildDivider(),
-                  _buildInfoRow('Media Engine', 'libmpv via media_kit'),
+                  _buildInfoRow(
+                    'Media Engine',
+                    LibVlcBridge.isSupported
+                        ? 'libmpv (media_kit) + LibVLC 3.6 (LGPL v2.1)'
+                        : 'libmpv via media_kit',
+                  ),
                   _buildDivider(),
                   _buildActionRow(
                     'Open-source disclaimer',
@@ -562,10 +607,115 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
               ),
             ),
 
-            const SizedBox(height: 40),
+            const SizedBox(height: 96),
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _saveTmdbKey() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final key = _tmdbKeyController.text.trim();
+    final tmdb = ref.read(tmdbServiceProvider);
+    await tmdb.saveApiKey(key);
+    if (mounted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('TMDB API Key saved successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
+
+  Widget _buildLanguageDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Metadata Language',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.8),
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _languages.containsKey(_selectedLanguage)
+                  ? _selectedLanguage
+                  : 'en-US',
+              dropdownColor: const Color(0xFF1E1E1E),
+              isExpanded: true,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              items: _languages.entries.map((e) {
+                return DropdownMenuItem(value: e.key, child: Text(e.value));
+              }).toList(),
+              onChanged: (val) async {
+                if (val != null) {
+                  setState(() => _selectedLanguage = val);
+                  await ref.read(tmdbServiceProvider).saveLanguage(val);
+                }
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCountryDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Age Certification Country',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.8),
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _countries.containsKey(_selectedCountry)
+                  ? _selectedCountry
+                  : 'US',
+              dropdownColor: const Color(0xFF1E1E1E),
+              isExpanded: true,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              items: _countries.entries.map((e) {
+                return DropdownMenuItem(value: e.key, child: Text(e.value));
+              }).toList(),
+              onChanged: (val) async {
+                if (val != null) {
+                  setState(() => _selectedCountry = val);
+                  await ref
+                      .read(tmdbServiceProvider)
+                      .saveCertificationCountry(val);
+                }
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -577,14 +727,17 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       stream: db.watchAllPlaylists(),
       builder: (context, snapshot) {
         final playlists = snapshot.data ?? [];
-        final PlaylistsTableData? activePlaylist = playlists.where((p) => p.id == activePlaylistId).firstOrNull ??
-            playlists.firstOrNull;
+        final PlaylistsTableData? activePlaylist =
+            playlists.where((p) => p.id == activePlaylistId).firstOrNull ??
+                playlists.firstOrNull;
 
         final hasPlaylist = activePlaylist != null;
         final playlistName = activePlaylist?.name ?? 'No Playlist Connected';
 
+        final isMobile = MediaQuery.sizeOf(context).width < 768;
+
         return GlassContainer(
-          padding: const EdgeInsets.all(22),
+          padding: EdgeInsets.all(isMobile ? 16 : 22),
           borderRadius: 16,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -607,29 +760,36 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                       size: 26,
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            Text(
-                              playlistName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
+                            Flexible(
+                              child: Text(
+                                playlistName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
                             ),
                             if (hasPlaylist) ...[
                               const SizedBox(width: 8),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: AppColors.primary.withValues(alpha: 0.2),
+                                  color:
+                                      AppColors.primary.withValues(alpha: 0.2),
                                   borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: AppColors.primary, width: 0.8),
+                                  border: Border.all(
+                                      color: AppColors.primary, width: 0.8),
                                 ),
                                 child: const Text(
                                   'ACTIVE',
@@ -658,33 +818,38 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                   ),
                 ],
               ),
-              const SizedBox(height: 18),
-              Row(
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
                 children: [
                   ElevatedButton.icon(
                     onPressed: () => context.go('/playlists'),
-                    icon: const Icon(Icons.settings_input_component_rounded, size: 16),
+                    icon: const Icon(Icons.settings_input_component_rounded,
+                        size: 16),
                     label: const Text('Manage All Playlists'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
                   OutlinedButton.icon(
                     onPressed: () => context.go('/playlists'),
                     icon: const Icon(Icons.add_rounded, size: 16),
                     label: const Text('Add New Provider'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white,
-                      side: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      side: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.2)),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(10),
                       ),
                     ),
                   ),
@@ -694,6 +859,63 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildPlaybackEngineSelector() {
+    final activeEngine = ref.watch(
+      playerControllerProvider.select((s) => s.playbackEngine),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Internal Playback Engine',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Switch between libmpv and bundled LibVLC (LGPL v2.1) without installing external apps.',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.5),
+            fontSize: 12,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: PlaybackEngine.values.map((engine) {
+            final selected = activeEngine == engine;
+            return ChoiceChip(
+              label: Text(engine.label),
+              selected: selected,
+              onSelected: (_) => ref
+                  .read(playerControllerProvider.notifier)
+                  .setPlaybackEngine(engine),
+              selectedColor: AppColors.primary,
+              backgroundColor: Colors.white.withValues(alpha: 0.06),
+              labelStyle: TextStyle(
+                color: selected ? Colors.white : Colors.white70,
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: BorderSide(
+                  color: selected
+                      ? AppColors.primary
+                      : Colors.white.withValues(alpha: 0.14),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
 
@@ -719,9 +941,11 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       style: const TextStyle(color: Colors.white, fontSize: 13.5),
       decoration: InputDecoration(
         labelText: label,
-        labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
+        labelStyle:
+            TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
         hintText: hint,
-        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.25), fontSize: 13),
+        hintStyle: TextStyle(
+            color: Colors.white.withValues(alpha: 0.25), fontSize: 13),
         filled: true,
         fillColor: Colors.white.withValues(alpha: 0.06),
         border: OutlineInputBorder(
@@ -736,12 +960,14 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
           borderRadius: BorderRadius.circular(10),
           borderSide: const BorderSide(color: AppColors.primary),
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       ),
     );
   }
 
-  Widget _buildSwitchRow(String title, String subtitle, bool value, ValueChanged<bool> onChanged) {
+  Widget _buildSwitchRow(
+      String title, String subtitle, bool value, ValueChanged<bool> onChanged) {
     return Row(
       children: [
         Expanded(
@@ -750,12 +976,16 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             children: [
               Text(
                 title,
-                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 2),
               Text(
                 subtitle,
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
               ),
             ],
           ),
@@ -769,7 +999,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
     );
   }
 
-  Widget _buildActionRow(String title, String subtitle, IconData icon, VoidCallback onTap) {
+  Widget _buildActionRow(
+      String title, String subtitle, IconData icon, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
@@ -793,17 +1024,23 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 12),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios_rounded, color: Colors.white.withValues(alpha: 0.3), size: 14),
+            Icon(Icons.arrow_forward_ios_rounded,
+                color: Colors.white.withValues(alpha: 0.3), size: 14),
           ],
         ),
       ),
@@ -816,11 +1053,13 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       children: [
         Text(
           label,
-          style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 13),
+          style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.6), fontSize: 13),
         ),
         Text(
           value,
-          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+          style: const TextStyle(
+              color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
         ),
       ],
     );
@@ -875,7 +1114,9 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       await db.delete(db.recentlyViewedTable).go();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Watch history cleared'), backgroundColor: Colors.green),
+          const SnackBar(
+              content: Text('Watch history cleared'),
+              backgroundColor: Colors.green),
         );
       }
     } catch (e) {
@@ -900,7 +1141,9 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       await db.delete(db.epgChannelsTable).go();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('EPG cache cleared'), backgroundColor: Colors.green),
+          const SnackBar(
+              content: Text('EPG cache cleared'),
+              backgroundColor: Colors.green),
         );
       }
     } catch (e) {
@@ -919,7 +1162,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
 
       final docsDir = await getApplicationDocumentsDirectory();
       final dateStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
-      final backupFile = File(p.join(docsDir.path, 'filimu_plus_backup_$dateStr.json'));
+      final backupFile =
+          File(p.join(docsDir.path, 'filimu_plus_backup_$dateStr.json'));
       await backupFile.writeAsString(jsonContent);
 
       if (mounted) {
@@ -934,7 +1178,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Export failed: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Export failed: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -948,10 +1193,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       );
       if (res == null || res.files.isEmpty) return;
 
-      final filePath = res.files.first.path;
-      if (filePath == null) return;
-
-      final file = File(filePath);
+      final file = res.files.first.xFile;
       final content = await file.readAsString();
       final backup = ref.read(backupServiceProvider);
       final count = await backup.importBackupJson(content);
@@ -959,7 +1201,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Restored $count playlists and settings successfully'),
+            content:
+                Text('Restored $count playlists and settings successfully'),
             backgroundColor: Colors.green,
           ),
         );
@@ -967,7 +1210,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Import failed: $e'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Import failed: $e'), backgroundColor: Colors.red),
         );
       }
     }
@@ -976,12 +1220,16 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
   Future<void> _saveCustomHeaders() async {
     try {
       final storage = ref.read(secureStorageProvider);
-      await storage.savePlaylistCredentials('filimu_custom_user_agent', _userAgentController.text.trim());
-      await storage.savePlaylistCredentials('filimu_custom_referer', _refererController.text.trim());
+      await storage.savePlaylistCredentials(
+          'filimu_custom_user_agent', _userAgentController.text.trim());
+      await storage.savePlaylistCredentials(
+          'filimu_custom_referer', _refererController.text.trim());
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Custom stream headers saved'), backgroundColor: Colors.green),
+          const SnackBar(
+              content: Text('Custom stream headers saved'),
+              backgroundColor: Colors.green),
         );
       }
     } catch (e) {
@@ -1004,7 +1252,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E24),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Mobile Remote Control', style: TextStyle(color: Colors.white, fontSize: 16)),
+        title: const Text('Mobile Remote Control',
+            style: TextStyle(color: Colors.white, fontSize: 16)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1019,12 +1268,16 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.qr_code_2_rounded, size: 120, color: Colors.black),
+                    const Icon(Icons.qr_code_2_rounded,
+                        size: 120, color: Colors.black),
                     const SizedBox(height: 8),
                     SelectableText(
                       url,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
@@ -1034,7 +1287,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             Text(
               'Connect your phone to the same Wi-Fi network and open the address above.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
             ),
             const SizedBox(height: 8),
             TextButton.icon(
@@ -1044,8 +1298,10 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                   const SnackBar(content: Text('Address copied to clipboard!')),
                 );
               },
-              icon: const Icon(Icons.copy_rounded, size: 16, color: AppColors.primary),
-              label: const Text('Copy URL', style: TextStyle(color: AppColors.primary, fontSize: 13)),
+              icon: const Icon(Icons.copy_rounded,
+                  size: 16, color: AppColors.primary),
+              label: const Text('Copy URL',
+                  style: TextStyle(color: AppColors.primary, fontSize: 13)),
             ),
           ],
         ),
@@ -1070,7 +1326,8 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            child:
+                const Text('Cancel', style: TextStyle(color: Colors.white54)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),

@@ -8,6 +8,7 @@ import '../../../../shared/models/media_item.dart';
 import '../../../../shared/services/tmdb_service.dart';
 import '../../../player/data/player_controller.dart';
 import '../../../player/data/external_player_service.dart';
+import '../../../downloads/data/download_service.dart';
 import '../../../xtream/data/xtream_client.dart';
 import '../../../stalker/data/stalker_client.dart';
 
@@ -357,7 +358,7 @@ class SeriesDetailsNotifier extends StateNotifier<SeriesDetailsState> {
     } else if (playlist.type == 'stalker' &&
         playlist.serverUrl != null &&
         playlist.macAddress != null) {
-      final stalkerCreds = StalkerCredentials(
+      var stalkerCreds = StalkerCredentials(
         serverUrl: playlist.serverUrl!,
         macAddress: playlist.macAddress!,
       );
@@ -365,7 +366,11 @@ class SeriesDetailsNotifier extends StateNotifier<SeriesDetailsState> {
 
       state = state.copyWith(isLoadingEpisodes: true);
       try {
-        await client.handshake(stalkerCreds);
+        final token = await client.handshake(stalkerCreds);
+        if (token != null && token.isNotEmpty) {
+          stalkerCreds = stalkerCreds.copyWith(token: token);
+          await client.getProfile(stalkerCreds);
+        }
         final rawEpisodes = await client.getSeriesEpisodes(
             stalkerCreds, state.series.providerId);
         if (rawEpisodes.isNotEmpty) {
@@ -592,6 +597,75 @@ class SeriesDetailsNotifier extends StateNotifier<SeriesDetailsState> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Opening trailer for "${state.displayTitle}"'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> downloadEpisode(
+    BuildContext context,
+    Map<String, dynamic> ep,
+    int idx,
+  ) async {
+    final epId = ep['id']?.toString() ?? '';
+    final containerExt = ep['container_extension']?.toString() ?? 'mp4';
+    final epTitle = ep['title']?.toString() ?? 'Episode ${idx + 1}';
+    final epNum = ep['episode_num']?.toString() ?? '${idx + 1}';
+
+    String? streamUrl;
+    final directUrl = ep['stream_url']?.toString();
+    if (directUrl != null && directUrl.isNotEmpty) {
+      streamUrl = directUrl;
+    } else if (state.xtreamCreds != null &&
+        state.xtreamClient != null &&
+        epId.isNotEmpty) {
+      streamUrl = state.xtreamClient!.buildSeriesStreamUrl(
+        state.xtreamCreds!,
+        epId,
+        containerExt,
+      );
+    } else if (state.stalkerCreds != null && state.stalkerClient != null) {
+      final cmd = ep['cmd']?.toString();
+      if (cmd != null && cmd.isNotEmpty) {
+        streamUrl = await state.stalkerClient!.createLink(
+          state.stalkerCreds!,
+          type: 'vod',
+          cmd: cmd,
+        );
+      }
+    }
+
+    if (streamUrl == null || streamUrl.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not resolve download URL for this episode.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    final downloadId =
+        'series_${state.series.providerId}_s${state.selectedSeason ?? '1'}_e$epNum';
+    final downloadTitle =
+        '${state.displayTitle} - S${state.selectedSeason ?? '1'}E$epNum: $epTitle';
+
+    _ref.read(downloadNotifierProvider.notifier).startDownload(
+          id: downloadId,
+          title: downloadTitle,
+          streamUrl: streamUrl,
+          posterUrl: state.displayPoster,
+          extension: containerExt,
+        );
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Downloading "$downloadTitle" for offline playback'),
+          backgroundColor: Colors.green,
           duration: const Duration(seconds: 2),
         ),
       );

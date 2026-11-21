@@ -456,6 +456,9 @@ class MobileSeriesDetailsSheet extends ConsumerWidget {
                       final epThumbnail = (rawImg != null && rawImg.startsWith('http')) ? rawImg : null;
                       final epDuration = epInfo?['duration']?.toString() ??
                           (epInfo?['duration_secs'] != null ? '${((epInfo!['duration_secs'] as num) ~/ 60)} min' : null);
+                      final epPlot = epInfo?['plot']?.toString() ??
+                          ep['plot']?.toString() ??
+                          epInfo?['overview']?.toString();
 
                       return InkWell(
                         onTap: () => controller.playEpisode(context, ep, idx),
@@ -468,67 +471,96 @@ class MobileSeriesDetailsSheet extends ConsumerWidget {
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
                           ),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Stack(
-                                  children: [
-                                    Container(
-                                      width: 100,
-                                      height: 58,
-                                      color: Colors.white12,
-                                      child: epThumbnail != null
-                                          ? CachedNetworkImage(
-                                              imageUrl: epThumbnail,
-                                              fit: BoxFit.cover,
-                                              errorWidget: (_, __, ___) => _buildEpisodePlaceholder(epNum),
-                                            )
-                                          : _buildEpisodePlaceholder(epNum),
-                                    ),
-                                    Positioned.fill(
-                                      child: Center(
-                                        child: Container(
-                                          padding: const EdgeInsets.all(4),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black.withValues(alpha: 0.5),
-                                            shape: BoxShape.circle,
+                              Row(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(6),
+                                    child: Stack(
+                                      children: [
+                                        Container(
+                                          width: 110,
+                                          height: 62,
+                                          color: Colors.white12,
+                                          child: epThumbnail != null
+                                              ? CachedNetworkImage(
+                                                  imageUrl: epThumbnail,
+                                                  fit: BoxFit.cover,
+                                                  errorWidget: (_, __, ___) => _buildEpisodePlaceholder(epNum),
+                                                )
+                                              : _buildEpisodePlaceholder(epNum),
+                                        ),
+                                        Positioned.fill(
+                                          child: Center(
+                                            child: Container(
+                                              padding: const EdgeInsets.all(5),
+                                              decoration: BoxDecoration(
+                                                color: Colors.black.withValues(alpha: 0.55),
+                                                shape: BoxShape.circle,
+                                              ),
+                                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 18),
+                                            ),
                                           ),
-                                          child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 16),
                                         ),
-                                      ),
+                                      ],
                                     ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '$epNum. $epTitle',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    if (epDuration != null) ...[
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        epDuration,
-                                        style: TextStyle(
-                                          color: Colors.white.withValues(alpha: 0.5),
-                                          fontSize: 11,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '$epNum. $epTitle',
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w700,
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
+                                        if (epDuration != null && epDuration.isNotEmpty) ...[
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            epDuration,
+                                            style: TextStyle(
+                                              color: Colors.white.withValues(alpha: 0.55),
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.download_rounded,
+                                      color: Colors.white70,
+                                      size: 20,
+                                    ),
+                                    tooltip: 'Download Episode',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () =>
+                                        controller.downloadEpisode(context, ep, idx),
+                                  ),
+                                ],
                               ),
+                              if (epPlot != null && epPlot.trim().isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  epPlot.trim(),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.65),
+                                    fontSize: 12,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),

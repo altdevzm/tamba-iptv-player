@@ -36,17 +36,24 @@ class _PlatformNavigationSidebarState extends State<PlatformNavigationSidebar> {
   Widget build(BuildContext context) {
     final showLabels = !widget.compact || _expanded;
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      curve: Curves.easeOutCubic,
-      width: showLabels ? 238 : 72,
-      decoration: BoxDecoration(
-        color: AppColors.background.withValues(alpha: 0.97),
-        border: Border(
-          right: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+    return Focus(
+      skipTraversal: true,
+      onFocusChange: (hasFocus) {
+        if (widget.isTv && mounted) {
+          setState(() => _expanded = hasFocus);
+        }
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        width: showLabels ? (widget.isTv ? 260 : 238) : 76,
+        decoration: BoxDecoration(
+          color: AppColors.background.withValues(alpha: 0.97),
+          border: Border(
+            right: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          ),
         ),
-      ),
-      child: Column(
+        child: Column(
         children: [
           SizedBox(
             height: 72,
@@ -177,6 +184,7 @@ class _PlatformNavigationSidebarState extends State<PlatformNavigationSidebar> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

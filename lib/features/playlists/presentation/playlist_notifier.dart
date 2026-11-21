@@ -39,26 +39,73 @@ class PlaylistNotifier extends AsyncNotifier<List<PlaylistsTableData>> {
 
   /// Downloads the M3U at [url] and imports it under [playlistId].
   Future<void> importFromUrl(String playlistId, String url) async {
+    ref.read(isSyncingPlaylistProvider.notifier).state = true;
+    ref.read(playlistSyncStatusProvider.notifier).state =
+        'Downloading M3U playlist...';
     state = const AsyncValue.loading();
-    state = await AsyncValue.guard(
-      () => _repository.importFromUrl(playlistId, url).then((_) => _currentPlaylists()),
-    );
+    try {
+      await _repository.importFromUrl(
+        playlistId,
+        url,
+        onProgress: (status) {
+          ref.read(playlistSyncStatusProvider.notifier).state = status;
+        },
+      );
+      state = AsyncValue.data(await _currentPlaylists());
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+      rethrow;
+    } finally {
+      ref.read(isSyncingPlaylistProvider.notifier).state = false;
+      ref.read(playlistSyncStatusProvider.notifier).state = null;
+    }
   }
 
   /// Reads the local M3U file at [filePath] and imports it under [playlistId].
   Future<void> importFromFile(String playlistId, String filePath) async {
+    ref.read(isSyncingPlaylistProvider.notifier).state = true;
+    ref.read(playlistSyncStatusProvider.notifier).state =
+        'Reading M3U file...';
     state = const AsyncValue.loading();
-    state = await AsyncValue.guard(
-      () => _repository.importFromFile(playlistId, filePath).then((_) => _currentPlaylists()),
-    );
+    try {
+      await _repository.importFromFile(
+        playlistId,
+        filePath,
+        onProgress: (status) {
+          ref.read(playlistSyncStatusProvider.notifier).state = status;
+        },
+      );
+      state = AsyncValue.data(await _currentPlaylists());
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+      rethrow;
+    } finally {
+      ref.read(isSyncingPlaylistProvider.notifier).state = false;
+      ref.read(playlistSyncStatusProvider.notifier).state = null;
+    }
   }
 
   /// Re-fetches the playlist identified by [playlistId] from its stored source.
   Future<void> refreshPlaylist(String playlistId) async {
+    ref.read(isSyncingPlaylistProvider.notifier).state = true;
+    ref.read(playlistSyncStatusProvider.notifier).state =
+        'Syncing M3U playlist...';
     state = const AsyncValue.loading();
-    state = await AsyncValue.guard(
-      () => _repository.refreshPlaylist(playlistId).then((_) => _currentPlaylists()),
-    );
+    try {
+      await _repository.refreshPlaylist(
+        playlistId,
+        onProgress: (status) {
+          ref.read(playlistSyncStatusProvider.notifier).state = status;
+        },
+      );
+      state = AsyncValue.data(await _currentPlaylists());
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+      rethrow;
+    } finally {
+      ref.read(isSyncingPlaylistProvider.notifier).state = false;
+      ref.read(playlistSyncStatusProvider.notifier).state = null;
+    }
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
