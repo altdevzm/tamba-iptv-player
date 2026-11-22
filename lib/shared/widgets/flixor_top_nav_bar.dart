@@ -6,6 +6,7 @@ import '../../core/persistence/app_database.dart';
 import '../../core/persistence/database_provider.dart';
 import '../../core/theme/app_colors.dart';
 import '../../features/content_details/domain/device_form_factor.dart';
+import 'tv_focusable.dart';
 
 class FlixorTopNavBar extends ConsumerWidget {
   final String currentRoute;
@@ -119,23 +120,30 @@ class FlixorTopNavBar extends ConsumerWidget {
                   ],
                   const SizedBox(width: 10),
                 ],
-                IconButton(
-                  tooltip: 'Search',
+                TvFocusable(
+                  borderRadius: 20,
+                  padding: const EdgeInsets.all(8),
+                  isActive: currentRoute.startsWith('/search'),
                   onPressed: () => context.go('/search'),
-                  icon: Icon(
+                  child: Icon(
                     Icons.search_rounded,
+                    size: 22,
                     color: currentRoute.startsWith('/search')
                         ? AppColors.primary
                         : Colors.white,
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Settings',
+                const SizedBox(width: 4),
+                TvFocusable(
+                  borderRadius: 20,
+                  padding: const EdgeInsets.all(8),
+                  isActive: currentRoute.startsWith('/settings'),
                   onPressed: () => context.go('/settings'),
-                  icon: Icon(
+                  child: Icon(
                     currentRoute.startsWith('/settings')
                         ? Icons.settings_rounded
                         : Icons.settings_outlined,
+                    size: 22,
                     color: currentRoute.startsWith('/settings')
                         ? AppColors.primary
                         : Colors.white,
@@ -389,38 +397,31 @@ class FlixorTopNavBar extends ConsumerWidget {
     required VoidCallback onTap,
   }) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 3),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-          decoration: BoxDecoration(
-            color: isActive
-                ? Colors.white.withValues(alpha: 0.14)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 15,
-                color: isActive ? Colors.white : Colors.white60,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: TvFocusable(
+        isActive: isActive,
+        borderRadius: 20,
+        scaleOnFocus: 1.04,
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+        onPressed: onTap,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isActive ? AppColors.primary : Colors.white,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: isActive ? Colors.white : Colors.white.withValues(alpha: 0.85),
+                fontSize: 13,
+                fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
               ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.white70,
-                  fontSize: 13,
-                  fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -440,21 +441,17 @@ class _ProfileAvatarButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: 'Profile & Account',
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Center(
-            child: Icon(
-              isActive
-                  ? Icons.account_circle_rounded
-                  : Icons.account_circle_outlined,
-              color: isActive ? AppColors.primary : Colors.white,
-              size: 24,
-            ),
-          ),
+      child: TvFocusable(
+        isActive: isActive,
+        borderRadius: 20,
+        padding: const EdgeInsets.all(8),
+        onPressed: onTap,
+        child: Icon(
+          isActive
+              ? Icons.account_circle_rounded
+              : Icons.account_circle_outlined,
+          color: isActive ? AppColors.primary : Colors.white,
+          size: 24,
         ),
       ),
     );

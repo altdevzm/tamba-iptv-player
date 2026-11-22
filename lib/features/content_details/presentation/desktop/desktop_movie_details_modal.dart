@@ -26,8 +26,11 @@ class DesktopMovieDetailsModal extends ConsumerWidget {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           Navigator.of(context).pop();
         },
+        const SingleActivator(LogicalKeyboardKey.goBack): () {
+          Navigator.of(context).pop();
+        },
       },
-      child: Focus(
+      child: FocusScope(
         autofocus: true,
         child: Dialog(
           backgroundColor: Colors.transparent,
@@ -114,6 +117,7 @@ class DesktopMovieDetailsModal extends ConsumerWidget {
                                   children: [
                                     // Watch Now
                                     ElevatedButton.icon(
+                                      autofocus: true,
                                       onPressed: () => controller.playMovie(context),
                                       icon: const Icon(Icons.play_arrow_rounded,
                                           color: Colors.black, size: 26),

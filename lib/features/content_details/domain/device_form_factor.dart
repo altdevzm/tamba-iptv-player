@@ -14,10 +14,15 @@ class DeviceFormFactor {
   /// report touch mode instead of `NavigationMode.directional`.
   static final ValueNotifier<bool> forceTvMode = ValueNotifier<bool>(false);
 
-  /// Detects Android TV by its directional-navigation environment (or manual
-  /// Force TV Mode override), not its screen size.
+  /// Detected natively on Android via `FEATURE_LEANBACK` or
+  /// `UI_MODE_TYPE_TELEVISION` so real Android TVs / Google TVs always get the
+  /// TV interface even when they report `NavigationMode.traditional`.
+  static bool nativeAndroidTv = false;
+
+  /// Detects Android TV by native Leanback/TV UI mode, directional navigation,
+  /// or manual Force TV Mode override — never by screen size alone.
   static bool isTv(BuildContext context) {
-    if (forceTvMode.value) return true;
+    if (forceTvMode.value || nativeAndroidTv) return true;
     return defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).navigationMode == NavigationMode.directional;
   }

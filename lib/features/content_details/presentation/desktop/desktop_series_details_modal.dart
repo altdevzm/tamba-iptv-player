@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/persistence/app_database.dart';
+import '../../../../shared/widgets/tv_focusable.dart';
 import '../controllers/series_details_controller.dart';
 
 class DesktopSeriesDetailsModal extends ConsumerWidget {
@@ -26,8 +27,11 @@ class DesktopSeriesDetailsModal extends ConsumerWidget {
         const SingleActivator(LogicalKeyboardKey.escape): () {
           Navigator.of(context).pop();
         },
+        const SingleActivator(LogicalKeyboardKey.goBack): () {
+          Navigator.of(context).pop();
+        },
       },
-      child: Focus(
+      child: FocusScope(
         autofocus: true,
         child: Dialog(
           backgroundColor: Colors.transparent,
@@ -114,6 +118,7 @@ class DesktopSeriesDetailsModal extends ConsumerWidget {
                                   children: [
                                     // Watch First Episode / Watch Now
                                     ElevatedButton.icon(
+                                      autofocus: true,
                                       onPressed: () =>
                                           controller.playFirstAvailableEpisode(context),
                                       icon: const Icon(Icons.play_arrow_rounded,
@@ -473,17 +478,16 @@ class DesktopSeriesDetailsModal extends ConsumerWidget {
                                   ep['plot']?.toString() ??
                                   epInfo?['description']?.toString();
 
-                              return InkWell(
-                                onTap: () => controller.playEpisode(context, ep, idx),
-                                borderRadius: BorderRadius.circular(10),
-                                child: Container(
-                                  margin: const EdgeInsets.only(bottom: 12),
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: TvFocusable(
+                                  borderRadius: 10,
+                                  scaleOnFocus: 1.02,
+                                  backgroundColor:
+                                      Colors.white.withValues(alpha: 0.05),
                                   padding: const EdgeInsets.all(14),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.04),
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
-                                  ),
+                                  onPressed: () =>
+                                      controller.playEpisode(context, ep, idx),
                                   child: Row(
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [

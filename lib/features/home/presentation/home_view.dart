@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -923,47 +924,83 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
     final hasPoster = item.posterUrl != null && item.posterUrl!.isNotEmpty;
 
     return FocusableActionDetector(
-      onFocusChange: (f) => setState(() => _isFocused = f),
+      onFocusChange: (f) {
+        setState(() => _isFocused = f);
+        if (f && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              Scrollable.ensureVisible(
+                context,
+                alignment: 0.35,
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutCubic,
+              );
+            }
+          });
+        }
+      },
       onShowHoverHighlight: (h) => setState(() => _isHovered = h),
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (_) => widget.onTap(),
         ),
       },
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+      },
       child: GestureDetector(
         onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
+        child: AnimatedScale(
+          scale: _isFocused ? 1.05 : (_isHovered ? 1.03 : 1.0),
+          duration: const Duration(milliseconds: 130),
           curve: Curves.easeOutCubic,
-          width: widget.width,
-          height: widget.height,
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: _isFocused
-                  ? Colors.white
-                  : (_isHovered
-                      ? AppColors.primary
-                      : Colors.white.withValues(alpha: 0.06)),
-              width: _isFocused ? 2 : (_isHovered ? 1.4 : 0.8),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 130),
+            curve: Curves.easeOutCubic,
+            width: widget.width,
+            height: widget.height,
+            decoration: BoxDecoration(
+              color: _isFocused ? AppColors.tvFocusFill : AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: _isFocused
+                    ? AppColors.tvFocusBright
+                    : (_isHovered
+                        ? AppColors.tvFocus
+                        : Colors.white.withValues(alpha: 0.08)),
+                width: _isFocused ? 3.0 : (_isHovered ? 1.8 : 0.8),
+              ),
+              boxShadow: _isFocused
+                  ? const [
+                      BoxShadow(
+                        color: AppColors.tvFocusGlow,
+                        blurRadius: 18,
+                        spreadRadius: 1.5,
+                      ),
+                    ]
+                  : null,
             ),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (hasPoster)
-                CachedNetworkImage(
-                  imageUrl: item.posterUrl!,
-                  httpHeaders: const {
-                    'User-Agent':
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                  },
-                  fit: BoxFit.cover,
-                  placeholder: (_, __) => _buildFallback(item, isLoading: true),
-                  errorWidget: (_, __, ___) => _buildFallback(item),
-                )
+            clipBehavior: Clip.antiAlias,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (hasPoster)
+                  CachedNetworkImage(
+                    imageUrl: item.posterUrl!,
+                    memCacheWidth: 300,
+                    maxWidthDiskCache: 400,
+                    httpHeaders: const {
+                      'User-Agent':
+                          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    },
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => _buildFallback(item, isLoading: true),
+                    errorWidget: (_, __, ___) => _buildFallback(item),
+                  )
               else
                 _buildFallback(item),
 
@@ -1037,7 +1074,8 @@ class _FlixorPosterCardState extends State<_FlixorPosterCard> {
                     ),
                   ),
                 ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

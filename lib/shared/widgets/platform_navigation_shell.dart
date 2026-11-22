@@ -75,11 +75,19 @@ class PlatformNavigationShell extends StatelessWidget {
               : null,
           body: Column(
             children: [
-              FlixorTopNavBar(
-                currentRoute: currentRoute,
-                navigationShell: navigationShell,
+              FocusTraversalGroup(
+                policy: ReadingOrderTraversalPolicy(),
+                child: FlixorTopNavBar(
+                  currentRoute: currentRoute,
+                  navigationShell: navigationShell,
+                ),
               ),
-              Expanded(child: child),
+              Expanded(
+                child: FocusTraversalGroup(
+                  policy: ReadingOrderTraversalPolicy(),
+                  child: child,
+                ),
+              ),
             ],
           ),
         );

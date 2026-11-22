@@ -1,6 +1,8 @@
 import 'dart:async';
-import 'dart:ui';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -34,7 +36,20 @@ void main() async {
   }
   StreamingManager.configureResourceCaches();
 
-  // Stage 2: Load saved user preferences before first frame
+  // Stage 2: Detect native Android TV (Leanback / UI_MODE_TYPE_TELEVISION) &
+  // restore saved "Force Smart TV Mode" preference before first frame.
+  if (!kIsWeb && Platform.isAndroid) {
+    try {
+      const deviceChannel = MethodChannel('tamba_iptv/device');
+      final isNativeTv =
+          await deviceChannel.invokeMethod<bool>('isAndroidTv') ?? false;
+      if (isNativeTv) {
+        DeviceFormFactor.nativeAndroidTv = true;
+        AppLogger.info('Startup', 'Detected native Android TV / Leanback device');
+      }
+    } catch (_) {}
+  }
+
   try {
     final storage = SecureStorageService();
     final savedTvMode =
