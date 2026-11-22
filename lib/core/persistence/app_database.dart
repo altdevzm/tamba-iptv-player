@@ -35,6 +35,19 @@ class AppDatabase extends _$AppDatabase {
       await customStatement('PRAGMA foreign_keys = ON');
       await customStatement('PRAGMA journal_mode = WAL');
       await customStatement('PRAGMA synchronous = NORMAL');
+      await customStatement('PRAGMA cache_size = -4000');
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_content_playlist_type_cat '
+        'ON content_items_table (playlist_id, type, category_id)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_content_playlist_type_year '
+        'ON content_items_table (playlist_id, type, release_year DESC)',
+      );
+      await customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_content_playlist_type_rating '
+        'ON content_items_table (playlist_id, type, rating DESC)',
+      );
     },
   );
 

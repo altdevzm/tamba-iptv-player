@@ -27,7 +27,11 @@ void main() async {
     return true;
   };
 
-  MediaKit.ensureInitialized();
+  try {
+    MediaKit.ensureInitialized();
+  } catch (e, st) {
+    AppLogger.error('Startup', 'MediaKit initialization failed (LibVLC fallback remains available)', e, st);
+  }
   StreamingManager.configureResourceCaches();
 
   // Stage 2: Load saved user preferences before first frame

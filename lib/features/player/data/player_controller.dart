@@ -160,8 +160,50 @@ class PlayerState {
 
 class PlayerController extends StateNotifier<PlayerState>
     with WidgetsBindingObserver {
-  final Player player;
-  late final VideoController videoController;
+  Player? _player;
+  VideoController? _videoController;
+  bool _playerInitialized = false;
+
+  /// Lazily initializes native libmpv + VideoController ONLY when playback
+  /// actually starts, preventing 64MB+ native heap & EGL surface allocations
+  /// from crashing low-RAM Smart TVs during cold startup before data loads.
+  Player get player {
+    _ensurePlayerInitialized();
+    return _player!;
+  }
+
+  VideoController get videoController {
+    _ensurePlayerInitialized();
+    return _videoController!;
+  }
+
+  bool get isPlayerInitialized => _playerInitialized;
+
+  void _ensurePlayerInitialized() {
+    if (_playerInitialized && _player != null && _videoController != null) {
+      return;
+    }
+    final isLowMemoryAndroid = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+    final p = Player(
+      configuration: PlayerConfiguration(
+        // 16 MB on Android/TV (down from 64 MB) to prevent native OOM on 1-2GB TVs
+        bufferSize: isLowMemoryAndroid ? 16 * 1024 * 1024 : 32 * 1024 * 1024,
+      ),
+    );
+    final vc = VideoController(
+      p,
+      configuration: const VideoControllerConfiguration(
+        androidAttachSurfaceAfterVideoParameters: true,
+      ),
+    );
+    _player = p;
+    _videoController = vc;
+    _playerInitialized = true;
+    _initListeners();
+  }
+
   final LibVlcBridge libVlcBridge = LibVlcBridge();
   final List<StreamSubscription> _subscriptions = [];
   final AppDatabase _db;
@@ -202,20 +244,8 @@ class PlayerController extends StateNotifier<PlayerState>
   PlayerController(this._db, this._storage, {Dio? dio})
       : _stalkerClient = dio != null ? StalkerClient(dio) : null,
         streamingManager = StreamingManager(dio: dio),
-        player = Player(
-          configuration: const PlayerConfiguration(
-            bufferSize: 64 * 1024 * 1024, // 64 MB default
-          ),
-        ),
         super(const PlayerState()) {
-    videoController = VideoController(
-      player,
-      configuration: const VideoControllerConfiguration(
-        androidAttachSurfaceAfterVideoParameters: false,
-      ),
-    );
     WidgetsBinding.instance.addObserver(this);
-    _initListeners();
     _startPositionSaveTimer();
     _startStallDetection();
     _preferencesLoaded = _loadPreferences();
@@ -2013,7 +2043,11 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   Future<void> _pauseAndSaveForBackground() async {
-    await player.pause();
+    if (_usingLibVlc) {
+      await libVlcBridge.pause();
+    } else if (_player != null) {
+      await _player!.pause();
+    }
     await _saveCurrentPosition();
   }
 
@@ -2028,7 +2062,10 @@ class PlayerController extends StateNotifier<PlayerState>
     for (final sub in _subscriptions) {
       sub.cancel();
     }
-    player.dispose();
+    _player?.dispose();
+    _player = null;
+    _videoController = null;
+    _playerInitialized = false;
     super.dispose();
   }
 }
