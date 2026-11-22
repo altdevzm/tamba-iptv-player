@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
@@ -187,6 +188,7 @@ class PlayerController extends StateNotifier<PlayerState>
   int _reconnectAttempt = 0;
   int _playbackEpoch = 0;
   bool _isRecovering = false;
+  bool _isSearchingAlternative = false;
   bool _hasRenderedFirstFrame = false;
   DateTime? _bufferingSince;
   static const int _maxReconnectAttempts = StreamingManager.maxRecoveryAttempts;
@@ -397,6 +399,7 @@ class PlayerController extends StateNotifier<PlayerState>
         unawaited(_triggerTissFailover(
           reason: failureKind.name,
           isExpired: isExpired,
+          interruptCurrentOnFailure: true,
         ));
         return;
       }
@@ -537,14 +540,17 @@ class PlayerController extends StateNotifier<PlayerState>
         final stuckSecs =
             DateTime.now().difference(_bufferingSince!).inSeconds;
 
-        // Fast SmartStream failover on sustained live buffering (6s)
+        // Non-interruptive background SmartStream search on sustained live buffering (5s)
         if (item.type == MediaType.live &&
             tissController.hasAlternatives &&
             tissController.isAutoMode &&
             tissController.config.automaticSwitchingEnabled &&
-            stuckSecs >= 6) {
-          _bufferingSince = null;
-          unawaited(_triggerTissFailover(reason: 'sustained_buffering'));
+            !_isSearchingAlternative &&
+            stuckSecs >= 5) {
+          unawaited(_triggerTissFailover(
+            reason: 'sustained_buffering',
+            interruptCurrentOnFailure: false,
+          ));
           return;
         }
 
@@ -1145,35 +1151,160 @@ class PlayerController extends StateNotifier<PlayerState>
     } catch (_) {}
   }
 
+  /// Lightweight background reachability probe using a short HTTP GET header
+  /// check (never `HEAD`, which Xtream panels reject with 404) so we can verify
+  /// a backup feed is live and responsive WITHOUT interrupting active playback.
+  Future<bool> _probeStreamReachable(
+    String url,
+    Map<String, String> headers,
+  ) async {
+    if (kIsWeb) return true;
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return false;
+    }
+
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 3)
+      ..badCertificateCallback = (_, __, ___) => true;
+    try {
+      final req = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 3));
+      req.followRedirects = true;
+      req.maxRedirects = 4;
+      headers.forEach((k, v) => req.headers.set(k, v));
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-65535');
+
+      final res = await req.close().timeout(const Duration(seconds: 3));
+      final ok = res.statusCode >= 200 && res.statusCode < 300;
+      client.close(force: true);
+      return ok;
+    } catch (_) {
+      client.close(force: true);
+      return false;
+    }
+  }
+
+  /// Searches across all categories of the playlist for a lower-quality or
+  /// backup feed of the same logical channel IN THE BACKGROUND while keeping
+  /// the user's current viewing experience uninterrupted.
+  ///
+  /// Only switches once a responsive, verified alternative is found.
+  /// When [interruptCurrentOnFailure] is `false` (buffering/stall), if no
+  /// working alternative is found, the current stream continues undisturbed.
   Future<void> _triggerTissFailover({
     required String reason,
     bool isExpired = false,
+    bool interruptCurrentOnFailure = false,
   }) async {
-    if (_isRecovering) return;
+    if (_isRecovering || _isSearchingAlternative) return;
+    final current = state.currentItem;
+    if (current == null) return;
+
+    final epoch = _playbackEpoch;
     final throughput =
         streamingManager.analytics.snapshot().estimatedThroughputKbps;
-    final nextAlt = tissController.selectFailoverAlternative(
-      reason: reason,
+    final candidates = tissController.rankedFailoverCandidates(
       throughputKbps: throughput,
       isExpired: isExpired,
     );
-    if (nextAlt == null) {
-      _showTissNotification(
-        'No backup feeds available — reconnecting stream.',
-      );
-      _scheduleReconnect(reason: reason);
+
+    if (candidates.isEmpty) {
+      if (interruptCurrentOnFailure) {
+        _showTissNotification(
+          'No backup feeds available — reconnecting stream.',
+        );
+        _scheduleReconnect(reason: reason);
+      }
       return;
     }
 
+    _isSearchingAlternative = true;
+    StreamAlternative? verifiedTarget;
+    String? preResolvedUrl;
+
+    try {
+      final headers = await _getHttpHeaders();
+      final maxProbes = candidates.length < 4 ? candidates.length : 4;
+
+      for (int i = 0; i < maxProbes; i++) {
+        // Abort silently if user changed channels or closed the player
+        if (epoch != _playbackEpoch || !mounted) return;
+
+        // If playback already recovered smoothly on its own while we were
+        // searching in the background, do NOT interrupt the viewer!
+        if (!interruptCurrentOnFailure &&
+            state.playbackState == PlaybackState.playing &&
+            !state.isBuffering &&
+            _stalledSeconds == 0) {
+          return;
+        }
+
+        final candidate = candidates[i];
+        final probeItem = current.copyWith(
+          streamUrl: candidate.streamUrl,
+          providerId: candidate.providerId,
+        );
+        final resolvedUrl = await _resolvePlaybackUrl(probeItem);
+        if (epoch != _playbackEpoch || !mounted) return;
+
+        final reachable = await _probeStreamReachable(resolvedUrl, headers);
+        if (epoch != _playbackEpoch || !mounted) return;
+
+        if (reachable) {
+          verifiedTarget = candidate;
+          preResolvedUrl = resolvedUrl;
+          break;
+        } else {
+          tissController.markCandidateUnreachable(
+            candidate,
+            isExpired: isExpired,
+          );
+        }
+      }
+    } finally {
+      _isSearchingAlternative = false;
+    }
+
+    if (epoch != _playbackEpoch || !mounted) return;
+
+    // Final check before switching: if current playback stabilized while
+    // probing, keep watching without interruption.
+    if (!interruptCurrentOnFailure &&
+        state.playbackState == PlaybackState.playing &&
+        !state.isBuffering &&
+        _stalledSeconds == 0) {
+      return;
+    }
+
+    if (verifiedTarget == null) {
+      if (interruptCurrentOnFailure) {
+        _showTissNotification(
+          'No backup feeds available — reconnecting stream.',
+        );
+        _scheduleReconnect(reason: reason);
+      }
+      return;
+    }
+
+    tissController.commitVerifiedFailover(
+      verifiedTarget,
+      reason: reason,
+      isExpired: isExpired,
+    );
+
     await _commitTissSwitch(
-      nextAlt,
+      verifiedTarget,
+      preResolvedUrl: preResolvedUrl,
       notification:
-          'Switching to ${nextAlt.displayQuality} for smoother playback.',
+          'Switched to ${verifiedTarget.displayQuality} for smoother playback.',
     );
   }
 
   Future<void> _commitTissSwitch(
     StreamAlternative target, {
+    String? preResolvedUrl,
     String? notification,
   }) async {
     final current = state.currentItem;
@@ -1195,7 +1326,8 @@ class PlayerController extends StateNotifier<PlayerState>
 
     try {
       final headers = await _getHttpHeaders();
-      final resolvedUrl = await _resolvePlaybackUrl(switchedItem);
+      final resolvedUrl =
+          preResolvedUrl ?? await _resolvePlaybackUrl(switchedItem);
       // Abort cleanly if user switched channels while failover was preparing
       if (epoch != _playbackEpoch) {
         _isRecovering = false;
@@ -1224,7 +1356,10 @@ class PlayerController extends StateNotifier<PlayerState>
       }
     } catch (_) {
       _isRecovering = false;
-      await _triggerTissFailover(reason: 'alternative_failed');
+      await _triggerTissFailover(
+        reason: 'alternative_failed',
+        interruptCurrentOnFailure: true,
+      );
       return;
     }
     _isRecovering = false;
@@ -1316,6 +1451,7 @@ class PlayerController extends StateNotifier<PlayerState>
     await _preferencesLoaded;
     _playbackEpoch++;
     _cancelReconnectTimer();
+    _isSearchingAlternative = false;
     _reconnectAttempt = 0;
     _hasRenderedFirstFrame = false;
     _stalledSeconds = 0;

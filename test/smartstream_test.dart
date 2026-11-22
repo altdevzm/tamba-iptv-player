@@ -206,5 +206,42 @@ void main() {
       }
       expect(switches, 0);
     });
+
+    test('Cross-category matching & non-interruptive background candidate ranking', () {
+      final raw = [
+        _row(1, 'ss1_4k', 'ZA: SuperSport 1 4K', 'http://tv/ss1_4k', categoryId: 10),
+        _row(2, 'ss1_fhd', 'SuperSport 1 FHD', 'http://tv/ss1_fhd', categoryId: 20),
+        _row(3, 'ss1_hd', 'SuperSport 1 HD Backup', 'http://tv/ss1_hd', categoryId: 30),
+        _row(4, 'bbc_uk', 'UK: BBC One HD', 'http://tv/bbc_uk', categoryId: 40),
+        _row(5, 'bbc_us', 'US: BBC One HD', 'http://tv/bbc_us', categoryId: 50),
+      ];
+
+      final grouped = ChannelGroupingEngine.groupChannels(raw);
+      // SuperSport 1 across categories 10, 20, 30 must merge into 1 logical channel,
+      // while UK and US BBC One must remain strictly separate.
+      expect(grouped.length, 3);
+      final ss1 = grouped.firstWhere((g) => g.alternatives.length == 3);
+
+      final ctrl = TissController();
+      ctrl.attachLogicalChannel(ss1);
+      final initialId = ctrl.activeStream!.streamId;
+      expect(ctrl.activeStream!.tier, StreamQualityTier.uhd4k);
+
+      // Background ranking must NOT mutate activeStream until verified commit
+      final candidates = ctrl.rankedFailoverCandidates();
+      expect(candidates.length, 2);
+      expect(candidates.first.tier, StreamQualityTier.fhd1080);
+      expect(ctrl.activeStream!.streamId, initialId);
+
+      // Marking dead candidate unreachable excludes it from subsequent probes
+      ctrl.markCandidateUnreachable(candidates.first);
+      final nextCandidates = ctrl.rankedFailoverCandidates();
+      expect(nextCandidates.length, 1);
+      expect(nextCandidates.first.tier, StreamQualityTier.hd720);
+
+      // Committing verified alternative updates activeStream cleanly
+      ctrl.commitVerifiedFailover(nextCandidates.first, reason: 'sustained_buffering');
+      expect(ctrl.activeStream!.tier, StreamQualityTier.hd720);
+    });
   });
 }

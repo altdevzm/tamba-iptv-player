@@ -7,12 +7,12 @@ import 'tiss_models.dart';
 /// distinct regional feeds, language feeds, and time-shifted channels (`+1`).
 class ChannelGroupingEngine {
   static final _qualityTokenRegex = RegExp(
-    r'(?:^|[\s\-_|/\[\(\.]+)(4k|uhd|2160p|1440p|qhd|1080p|fhd|full\s*hd|720p|hd|576p|480p|sd|360p|hevc|h\.?265|h\.?264|50fps|60fps|raw|hq|lq)(?=[\s\-_|/\]\)\.]+|$)',
+    r'(?:^|[\s\-_|/\[\(\.]+)(4k\+?|\buhd\+?|\b2160p|1440p|qhd|1080p|fhd\+?|full\s*hd|720p|hd\+?|576p|480p|sd\+?|360p|hevc|h\.?265|h\.?264|50fps|60fps|raw|hq|lq|backup|vip|ultra)(?=[\s\-_|/\]\)\.]+|$)',
     caseSensitive: false,
   );
 
   static final _regionPrefixRegex = RegExp(
-    r'^(uk|us|usa|ca|can|fr|de|es|it|pt|ar|za|zm|ng|ke|gh|in|au|nz|nl|be|se|no|dk|pl|tr|ru|br|mx|latino)\s*[:|\-\s]+',
+    r'^(?:[\[\(]\s*)?(uk|us|usa|ca|can|fr|de|es|it|pt|ar|za|zm|ng|ke|gh|in|au|nz|nl|be|se|no|dk|pl|tr|ru|br|mx|af|africa|latino)(?:\s*[\]\)])?\s*[:|\-\s]+',
     caseSensitive: false,
   );
 
@@ -90,8 +90,19 @@ class ChannelGroupingEngine {
     return cleaned.isEmpty ? title.trim() : cleaned;
   }
 
-  /// Normalized comparison key (lowercase alphanumeric + region preserved).
+  /// Normalized comparison key (lowercase alphanumeric). Strips leading
+  /// provider/country prefix tags (e.g. `ZA: `, `AF | `) so identical channels
+  /// placed in different categories (e.g. `ZA: SuperSport 1 4K` vs
+  /// `SuperSport 1 HD`) match across categories, while [computeMatchConfidence]
+  /// still strictly enforces region/language separation (`UK` vs `US`, `+1`).
   static String normalizedKey(String displayName) {
+    final stripped = displayName.replaceFirst(_regionPrefixRegex, ' ');
+    final key = stripped
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9+]'), ' ')
+        .replaceAll(_multiSpaceRegex, ' ')
+        .trim();
+    if (key.isNotEmpty) return key;
     return displayName
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9+]'), ' ')

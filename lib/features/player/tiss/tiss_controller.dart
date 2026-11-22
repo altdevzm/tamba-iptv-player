@@ -197,13 +197,11 @@ class TissController {
     return _recentRebuffers.length >= _config.rebufferThreshold;
   }
 
-  /// Selects the best sustainable alternative within the SAME [LogicalChannel]
-  /// when the current stream fails or buffers repeatedly.
-  ///
-  /// Never switches to another logical channel or incompatible regional feed.
-  /// Returns `null` when no alternative is available (all failed or single stream).
-  StreamAlternative? selectFailoverAlternative({
-    required String reason,
+  /// Returns ranked failover candidates within the SAME [LogicalChannel]
+  /// (across all categories of the playlist) WITHOUT mutating active playback
+  /// state, so the player can probe them in the background without interrupting
+  /// the user's current viewing experience.
+  List<StreamAlternative> rankedFailoverCandidates({
     int? throughputKbps,
     bool isExpired = false,
     bool allowFallbackInManualMode = false,
@@ -212,22 +210,12 @@ class TissController {
     final channel = _activeChannel;
     final current = _activeStream;
     if (channel == null || current == null || channel.alternatives.length < 2) {
-      return null;
+      return const [];
     }
-    if (!_config.automaticSwitchingEnabled) return null;
-    if (!_isAutoMode && !allowFallbackInManualMode) return null;
+    if (!_config.automaticSwitchingEnabled) return const [];
+    if (!_isAutoMode && !allowFallbackInManualMode) return const [];
 
     final ts = now ?? DateTime.now();
-
-    // Record failure against current stream so we don't immediately re-pick it
-    healthRegistry.recordFailure(
-      current.streamId,
-      channel.logicalId,
-      isExpired: isExpired,
-      config: _config,
-      now: ts,
-    );
-
     final effectiveThroughput =
         _config.simulatePoorNetwork ? 1500 : throughputKbps;
     final sustainableKbps = effectiveThroughput != null && effectiveThroughput > 0
@@ -241,38 +229,89 @@ class TissController {
             healthRegistry.isAvailable(alt.streamId, now: ts))
         .toList();
 
-    if (candidates.isEmpty) return null;
+    if (candidates.isEmpty) return const [];
 
-    // Prefer lower-bitrate alternatives when failing over due to buffering/bandwidth
+    // Prefer lower-bitrate alternatives first when failing over due to buffering
     final lowerCandidates = candidates
         .where((a) => a.tier.rank < current.tier.rank)
         .toList();
 
-    List<StreamAlternative> pool = candidates;
+    List<StreamAlternative> primaryPool = candidates;
     if (sustainableKbps != null) {
       final sustainable = candidates
           .where((a) => a.estimatedBitrateKbps <= sustainableKbps)
           .toList();
       if (sustainable.isNotEmpty) {
-        pool = sustainable;
+        primaryPool = sustainable;
       } else if (lowerCandidates.isNotEmpty) {
-        pool = lowerCandidates;
+        primaryPool = lowerCandidates;
       }
     } else if (!isExpired && lowerCandidates.isNotEmpty) {
-      pool = lowerCandidates;
+      primaryPool = lowerCandidates;
     }
 
-    // Rank: highest sustainable quality weighted by reliability
-    pool.sort((a, b) {
+    int compareAlt(StreamAlternative a, StreamAlternative b) {
       final relA = healthRegistry.reliabilityScore(a.streamId);
       final relB = healthRegistry.reliabilityScore(b.streamId);
       if ((relB - relA).abs() > 0.25) {
         return relB.compareTo(relA);
       }
       return b.tier.rank.compareTo(a.tier.rank);
-    });
+    }
 
-    final chosen = pool.first;
+    primaryPool.sort(compareAlt);
+
+    // Append remaining healthy alternatives (e.g. same-tier backups from other
+    // categories) after the primary lower-quality pool so we still have fallback
+    // options if the lower-tier stream is offline.
+    final primaryIds = primaryPool.map((a) => a.streamId).toSet();
+    final secondaryPool = candidates
+        .where((a) => !primaryIds.contains(a.streamId))
+        .toList()
+      ..sort(compareAlt);
+
+    return [...primaryPool, ...secondaryPool];
+  }
+
+  /// Marks a candidate that failed background reachability probing so it enters
+  /// cooldown and is not probed repeatedly.
+  void markCandidateUnreachable(
+    StreamAlternative candidate, {
+    bool isExpired = false,
+    DateTime? now,
+  }) {
+    final channel = _activeChannel;
+    if (channel == null) return;
+    healthRegistry.recordFailure(
+      candidate.streamId,
+      channel.logicalId,
+      isExpired: isExpired,
+      config: _config,
+      now: now ?? DateTime.now(),
+    );
+  }
+
+  /// Commits a failover transition ONLY after [chosen] has been verified
+  /// reachable in the background.
+  void commitVerifiedFailover(
+    StreamAlternative chosen, {
+    required String reason,
+    bool isExpired = false,
+    DateTime? now,
+  }) {
+    final channel = _activeChannel;
+    final current = _activeStream;
+    if (channel == null || current == null) return;
+
+    final ts = now ?? DateTime.now();
+    healthRegistry.recordFailure(
+      current.streamId,
+      channel.logicalId,
+      isExpired: isExpired,
+      config: _config,
+      now: ts,
+    );
+
     _failoverStartedAt = ts;
     _lastSwitchAt = ts;
     _recentRebuffers.clear();
@@ -290,6 +329,36 @@ class TissController {
     );
 
     _activeStream = chosen;
+  }
+
+  /// Selects the best sustainable alternative within the SAME [LogicalChannel]
+  /// when the current stream fails or buffers repeatedly.
+  ///
+  /// Never switches to another logical channel or incompatible regional feed.
+  /// Returns `null` when no alternative is available (all failed or single stream).
+  StreamAlternative? selectFailoverAlternative({
+    required String reason,
+    int? throughputKbps,
+    bool isExpired = false,
+    bool allowFallbackInManualMode = false,
+    DateTime? now,
+  }) {
+    final ts = now ?? DateTime.now();
+    final ranked = rankedFailoverCandidates(
+      throughputKbps: throughputKbps,
+      isExpired: isExpired,
+      allowFallbackInManualMode: allowFallbackInManualMode,
+      now: ts,
+    );
+    if (ranked.isEmpty) return null;
+
+    final chosen = ranked.first;
+    commitVerifiedFailover(
+      chosen,
+      reason: reason,
+      isExpired: isExpired,
+      now: ts,
+    );
     return chosen;
   }
 
