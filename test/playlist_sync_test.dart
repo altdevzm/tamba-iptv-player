@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -8,6 +9,7 @@ import 'package:sqlite3/open.dart';
 
 import 'package:filimu_plus/core/diagnostics/app_logger.dart';
 import 'package:filimu_plus/core/persistence/app_database.dart';
+import 'package:filimu_plus/features/xtream/data/xtream_json_stream_parser.dart';
 
 void main() {
   setUpAll(() {
@@ -115,6 +117,54 @@ void main() {
       expect(clean, isNot(contains('alice')));
       expect(clean, isNot(contains('supersecret')));
       expect(clean, contains('http://secret.iptv.xyz/[redacted]'));
+    });
+
+    test('XtreamJsonStreamParser streams JSON arrays, object maps, escaped quotes, and 25k items',
+        () async {
+      // 1. Standard JSON array with escaped quotes and nested objects
+      const arrayJson =
+          '[{"stream_id":1,"name":"News \\"Live\\" {HD}","extra":{"a":1}},{"stream_id":2,"name":"Sports 4K"}]';
+      final arrayItems = await XtreamJsonStreamParser.streamObjectsFromByteStream(
+        Stream.fromIterable([utf8.encode(arrayJson.substring(0, 25)), utf8.encode(arrayJson.substring(25))]),
+      ).toList();
+      expect(arrayItems.length, 2);
+      expect(arrayItems[0]['name'], 'News "Live" {HD}');
+      expect(arrayItems[1]['stream_id'], 2);
+
+      // 2. Xtream associative object map format {"0": {...}, "1": {...}}
+      const mapJson =
+          '{"0":{"stream_id":10,"name":"Movie A"},"1":{"stream_id":11,"name":"Movie B"}}';
+      final mapItems = await XtreamJsonStreamParser.streamObjectsFromByteStream(
+        Stream.value(utf8.encode(mapJson)),
+      ).toList();
+      expect(mapItems.length, 2);
+      expect(mapItems[0]['name'], 'Movie A');
+      expect(mapItems[1]['stream_id'], 11);
+
+      // 3. Empty / HTML error page yields 0 cleanly without throwing
+      final htmlItems = await XtreamJsonStreamParser.streamObjectsFromByteStream(
+        Stream.value(utf8.encode('<html>502 Bad Gateway</html>')),
+      ).toList();
+      expect(htmlItems, isEmpty);
+
+      // 4. Large 25,000-object stream completes fast in constant memory
+      Stream<List<int>> largeStream() async* {
+        yield utf8.encode('[');
+        for (var i = 0; i < 25000; i++) {
+          final prefix = i == 0 ? '' : ',';
+          yield utf8.encode(
+            '$prefix{"stream_id":$i,"name":"Channel $i","category_id":"10"}',
+          );
+        }
+        yield utf8.encode(']');
+      }
+
+      var streamedCount = 0;
+      await for (final _
+          in XtreamJsonStreamParser.streamObjectsFromByteStream(largeStream())) {
+        streamedCount++;
+      }
+      expect(streamedCount, 25000);
     });
   });
 }

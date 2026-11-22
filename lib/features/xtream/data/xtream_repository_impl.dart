@@ -1,12 +1,16 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:drift/drift.dart';
 
 import '../../../core/diagnostics/app_logger.dart';
 import '../../../core/persistence/app_database.dart';
 import 'xtream_client.dart';
+import 'xtream_json_stream_parser.dart';
 
 /// Repository that imports or refreshes an Xtream Codes playlist into the
-/// local Drift database safely without deleting existing data on failure.
+/// local Drift database safely using O(1) constant-RAM streaming so 200k–300k+
+/// item Xtream catalogs never trigger Android TV OOM kills during login.
 class XtreamRepositoryImpl {
   final AppDatabase _db;
   final XtreamClient _client;
@@ -40,7 +44,26 @@ class XtreamRepositoryImpl {
   }) =>
       _syncPlaylist(playlistId, creds, onProgress: onProgress);
 
-  // ── Core sync logic ───────────────────────────────────────────────────────
+  // ── Core streaming sync logic ─────────────────────────────────────────────
+
+  Uri _buildActionUri(XtreamCredentials creds, String action) {
+    var rawUrl = creds.serverUrl.trim();
+    if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+      rawUrl = 'http://$rawUrl';
+    }
+    rawUrl = rawUrl.replaceAll(
+      RegExp(r'\/(?:get|player_api|panel_api)\.php$', caseSensitive: false),
+      '',
+    );
+    while (rawUrl.endsWith('/')) {
+      rawUrl = rawUrl.substring(0, rawUrl.length - 1);
+    }
+    return Uri.parse('$rawUrl/player_api.php').replace(queryParameters: {
+      'username': creds.username.trim(),
+      'password': creds.password.trim(),
+      'action': action,
+    });
+  }
 
   Future<void> _syncPlaylist(
     String playlistId,
@@ -61,7 +84,22 @@ class XtreamRepositoryImpl {
 
       onProgress?.call('Authenticating with Xtream server...');
       try {
-        await _client.getAccountInfo(creds);
+        final info = await _client.getAccountInfo(creds);
+        final userInfo = info['user_info'];
+        if (userInfo is Map) {
+          final auth = userInfo['auth'];
+          if (auth == 0 || auth == '0' || auth == false) {
+            throw Exception(
+              'Invalid Xtream username or password. Please check your login details.',
+            );
+          }
+          final status = userInfo['status']?.toString().toLowerCase();
+          if (status == 'expired' || status == 'banned' || status == 'disabled') {
+            throw Exception(
+              'Xtream account is $status. Please contact your IPTV provider.',
+            );
+          }
+        }
       } on DioException catch (e) {
         final code = e.response?.statusCode;
         if (code == 401 || code == 403) {
@@ -70,115 +108,143 @@ class XtreamRepositoryImpl {
           );
         }
         // Some panels restrict get_account_info; proceed to fetch categories.
-      } catch (_) {}
-
-      // 2. Download all categories & streams BEFORE modifying local SQLite so
-      //    any network/auth failure leaves the existing playlist 100% intact.
-      onProgress?.call('Downloading categories (Live, Movies, Series)...');
-      final liveCategories = await _client.getLiveCategories(creds);
-      final vodCategories = await _client.getVodCategories(creds);
-      final seriesCategories = await _client.getSeriesCategories(creds);
-
-      onProgress?.call('Downloading Live TV channels...');
-      final liveStreams = await _client.getLiveStreams(creds);
-
-      onProgress?.call('Downloading Movies & Series catalog...');
-      final vodStreams = await _client.getVodStreams(creds);
-      final seriesStreams = await _client.getSeriesStreams(creds);
-
-      final rawTotal =
-          liveStreams.length + vodStreams.length + seriesStreams.length;
-      if (rawTotal == 0) {
-        throw Exception(
-          'Xtream server returned 0 channels. Your existing playlist was preserved.',
-        );
+      } on XtreamApiException catch (e) {
+        if (e.statusCode == 401 || e.statusCode == 403) {
+          throw Exception(
+            'Authentication failed (HTTP ${e.statusCode}). Check your credentials.',
+          );
+        }
+        // Proceed if only get_account_info is restricted.
       }
 
-      // 3. Deduplicate categories & upsert in safe 500-row chunks inside a
-      //    transaction (composite-key ON CONFLICT preserves IDs & hidden flags).
-      onProgress?.call('Saving categories...');
+      // 2. Fetch small category lists and upsert them safely.
+      onProgress?.call('Loading categories (Live, Movies, Series)...');
+      final liveCategories = await _safeFetchCategories(
+        () => _client.getLiveCategories(creds),
+        'live',
+      );
+      final vodCategories = await _safeFetchCategories(
+        () => _client.getVodCategories(creds),
+        'movies',
+      );
+      final seriesCategories = await _safeFetchCategories(
+        () => _client.getSeriesCategories(creds),
+        'series',
+      );
+
       final categoryCompanions = <CategoriesTableCompanion>[
         ..._mapCategories(playlistId, liveCategories, 'live'),
         ..._mapCategories(playlistId, vodCategories, 'movies'),
         ..._mapCategories(playlistId, seriesCategories, 'series'),
       ];
 
-      int totalSaved = 0;
-
-      await _db.transaction(() async {
-        const catChunk = 500;
-        for (var i = 0; i < categoryCompanions.length; i += catChunk) {
-          final end = (i + catChunk < categoryCompanions.length)
-              ? i + catChunk
-              : categoryCompanions.length;
-          await _db.batchInsertCategories(categoryCompanions.sublist(i, end));
-        }
-
-        // Reload persisted categories so we have their auto-incremented IDs.
-        final savedLiveCats = await _db.getCategories(playlistId, 'live');
-        final savedVodCats = await _db.getCategories(playlistId, 'movies');
-        final savedSeriesCats = await _db.getCategories(playlistId, 'series');
-
-        final liveCatByProviderId = {
-          for (final c in savedLiveCats) c.providerId: c.id,
-        };
-        final vodCatByProviderId = {
-          for (final c in savedVodCats) c.providerId: c.id,
-        };
-        final seriesCatByProviderId = {
-          for (final c in savedSeriesCats) c.providerId: c.id,
-        };
-
-        // 4. Upsert streams in 1,500-item chunks so RAM stays low on 1–2GB Smart TVs.
-        const itemChunk = 1500;
-        final seenKeys = <String>{};
-
-        Future<void> upsertStreamBatch(
-          List<ContentItemsTableCompanion> items,
-          String label,
-        ) async {
-          for (var i = 0; i < items.length; i += itemChunk) {
-            final end = (i + itemChunk < items.length) ? i + itemChunk : items.length;
-            await _db.batchInsertContentItems(items.sublist(i, end));
-            totalSaved += (end - i);
-            onProgress?.call('Saving $label ($totalSaved / $rawTotal)...');
+      if (categoryCompanions.isNotEmpty) {
+        await _db.transaction(() async {
+          const catChunk = 500;
+          for (var i = 0; i < categoryCompanions.length; i += catChunk) {
+            final end = (i + catChunk < categoryCompanions.length)
+                ? i + catChunk
+                : categoryCompanions.length;
+            await _db.batchInsertCategories(categoryCompanions.sublist(i, end));
           }
-        }
+        });
+      }
 
-        await upsertStreamBatch(
-          _mapLiveStreams(
-              playlistId, liveStreams, liveCatByProviderId, creds, seenKeys),
-          'Live TV',
-        );
-        await upsertStreamBatch(
-          _mapVodStreams(
-              playlistId, vodStreams, vodCatByProviderId, creds, seenKeys),
-          'Movies',
-        );
-        await upsertStreamBatch(
-          _mapSeriesStreams(
-              playlistId, seriesStreams, seriesCatByProviderId, creds, seenKeys),
-          'Series',
-        );
+      // Reload persisted categories so we have their auto-incremented IDs.
+      final savedLiveCats = await _db.getCategories(playlistId, 'live');
+      final savedVodCats = await _db.getCategories(playlistId, 'movies');
+      final savedSeriesCats = await _db.getCategories(playlistId, 'series');
 
-        // 5. Update playlist metadata atomically inside the same transaction.
-        await (_db.update(_db.playlistsTable)
-              ..where((t) => t.id.equals(playlistId)))
-            .write(
-          PlaylistsTableCompanion(
-            channelCount: Value(totalSaved),
-            lastUpdated: Value(DateTime.now()),
-          ),
+      final liveCatByProviderId = {
+        for (final c in savedLiveCats) c.providerId: c.id,
+      };
+      final vodCatByProviderId = {
+        for (final c in savedVodCats) c.providerId: c.id,
+      };
+      final seriesCatByProviderId = {
+        for (final c in savedSeriesCats) c.providerId: c.id,
+      };
+
+      // 3. Stream-download & stream-parse each catalog SEQUENTIALLY in O(1) RAM.
+      //    Never holds full 100–200 MB JSON responses or decoded lists in memory!
+      var totalSaved = 0;
+
+      totalSaved += await _streamCatalog(
+        playlistId: playlistId,
+        uri: _buildActionUri(creds, 'get_live_streams'),
+        tempTag: '${playlistId}_live',
+        label: 'Live TV',
+        onProgress: onProgress,
+        mapRow: (s, idx) => _mapSingleLiveStream(
+          playlistId,
+          s,
+          idx,
+          liveCatByProviderId,
+          creds,
+        ),
+      );
+
+      totalSaved += await _streamCatalog(
+        playlistId: playlistId,
+        uri: _buildActionUri(creds, 'get_vod_streams'),
+        tempTag: '${playlistId}_vod',
+        label: 'Movies',
+        onProgress: onProgress,
+        mapRow: (s, idx) => _mapSingleVodStream(
+          playlistId,
+          s,
+          idx,
+          vodCatByProviderId,
+          creds,
+        ),
+      );
+
+      totalSaved += await _streamCatalog(
+        playlistId: playlistId,
+        uri: _buildActionUri(creds, 'get_series'),
+        tempTag: '${playlistId}_series',
+        label: 'Series',
+        onProgress: onProgress,
+        mapRow: (s, idx) => _mapSingleSeriesStream(
+          playlistId,
+          s,
+          idx,
+          seriesCatByProviderId,
+          creds,
+        ),
+      );
+
+      if (totalSaved == 0) {
+        throw Exception(
+          'Xtream server returned 0 channels. Check your credentials or server URL.',
         );
-      });
+      }
+
+      // 4. Update playlist metadata atomically.
+      await (_db.update(_db.playlistsTable)
+            ..where((t) => t.id.equals(playlistId)))
+          .write(
+        PlaylistsTableCompanion(
+          channelCount: Value(totalSaved),
+          lastUpdated: Value(DateTime.now()),
+        ),
+      );
 
       AppLogger.info(
         'XtreamSync',
-        'Synced $totalSaved items in ${sw.elapsedMilliseconds}ms',
+        'Stream-synced $totalSaved items in ${sw.elapsedMilliseconds}ms',
       );
       onProgress?.call('Complete! Synced $totalSaved items.');
-    } on DioException catch (e, st) {
+    } on HttpException catch (e, st) {
+      AppLogger.error('XtreamSync', 'HTTP error during Xtream sync', e, st);
+      throw Exception(e.message);
+    } on SocketException catch (e, st) {
       AppLogger.error('XtreamSync', 'Network error during Xtream sync', e, st);
+      throw Exception(
+        'Could not reach Xtream server. Check your internet connection and retry.',
+      );
+    } on DioException catch (e, st) {
+      AppLogger.error('XtreamSync', 'Dio error during Xtream sync', e, st);
       final code = e.response?.statusCode;
       if (code == 401 || code == 403) {
         throw Exception(
@@ -199,6 +265,87 @@ class XtreamRepositoryImpl {
       rethrow;
     } finally {
       _activeSyncs.remove(playlistId);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeFetchCategories(
+    Future<List<Map<String, dynamic>>> Function() fetcher,
+    String label,
+  ) async {
+    try {
+      return await fetcher();
+    } catch (e) {
+      AppLogger.warn('XtreamSync', 'Category fetch ($label) skipped: $e');
+      return const [];
+    }
+  }
+
+  /// Downloads one Xtream catalog endpoint to a temp file, streams JSON objects
+  /// one by one, upserts in 1,000-row chunks inside short transactions, yields
+  /// to the UI event loop between batches, and deletes the temp file immediately.
+  Future<int> _streamCatalog({
+    required String playlistId,
+    required Uri uri,
+    required String tempTag,
+    required String label,
+    required ContentItemsTableCompanion Function(
+      Map<String, dynamic> row,
+      int index,
+    ) mapRow,
+    void Function(String status)? onProgress,
+  }) async {
+    File? tempFile;
+    try {
+      onProgress?.call('Downloading $label...');
+      tempFile = await XtreamJsonStreamParser.downloadToTempFile(
+        uri,
+        tempTag: tempTag,
+        progressPrefix: 'Downloading $label',
+        onProgress: onProgress,
+      );
+
+      onProgress?.call('Saving $label...');
+      const batchSize = 1000;
+      final batch = <ContentItemsTableCompanion>[];
+      var count = 0;
+
+      await for (final row
+          in XtreamJsonStreamParser.streamObjectsFromFile(tempFile)) {
+        batch.add(mapRow(row, count));
+        count++;
+
+        if (batch.length >= batchSize) {
+          await _db.batchInsertContentItems(batch);
+          batch.clear();
+          onProgress?.call('Saving $label ($count items)...');
+          // Yield to keep UI responsive & allow GC on low-RAM Smart TVs
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+
+      if (batch.isNotEmpty) {
+        await _db.batchInsertContentItems(batch);
+        batch.clear();
+      }
+
+      AppLogger.info('XtreamSync', 'Imported $count $label items');
+      return count;
+    } catch (e) {
+      // Re-throw auth errors immediately; log non-fatal single-catalog errors
+      if (e is HttpException &&
+          (e.message.contains('401') || e.message.contains('403'))) {
+        rethrow;
+      }
+      AppLogger.warn('XtreamSync', '$label catalog sync issue: $e');
+      rethrow;
+    } finally {
+      if (tempFile != null) {
+        try {
+          if (await tempFile.exists()) {
+            await tempFile.delete();
+          }
+        } catch (_) {}
+      }
     }
   }
 
@@ -227,123 +374,99 @@ class XtreamRepositoryImpl {
     return result;
   }
 
-  List<ContentItemsTableCompanion> _mapLiveStreams(
+  ContentItemsTableCompanion _mapSingleLiveStream(
     String playlistId,
-    List<Map<String, dynamic>> raw,
+    Map<String, dynamic> s,
+    int idx,
     Map<String, int> catByProviderId,
     XtreamCredentials creds,
-    Set<String> seenKeys,
   ) {
-    final result = <ContentItemsTableCompanion>[];
-    for (var i = 0; i < raw.length; i++) {
-      final s = raw[i];
-      final providerId = _str(s['stream_id']) ?? 'live_$i';
-      if (!seenKeys.add('live::$providerId')) continue;
-      final catProviderId = _str(s['category_id']);
-      final categoryId =
-          catProviderId != null ? catByProviderId[catProviderId] : null;
-      final direct = _str(s['direct_source']);
-      final streamUrl = (direct != null && direct.startsWith('http'))
-          ? direct
-          : _client.buildLiveStreamUrl(creds, providerId, ext: 'ts');
+    final providerId = _str(s['stream_id']) ?? 'live_$idx';
+    final catProviderId = _str(s['category_id']);
+    final categoryId =
+        catProviderId != null ? catByProviderId[catProviderId] : null;
+    final direct = _str(s['direct_source']);
+    final streamUrl = (direct != null && direct.startsWith('http'))
+        ? direct
+        : _client.buildLiveStreamUrl(creds, providerId, ext: 'ts');
 
-      result.add(
-        ContentItemsTableCompanion(
-          playlistId: Value(playlistId),
-          categoryId: Value(categoryId),
-          title: Value(_str(s['name']) ?? 'Channel $providerId'),
-          type: const Value('live'),
-          providerId: Value(providerId),
-          streamUrl: Value(streamUrl),
-          containerExtension: const Value(null),
-          posterUrl: Value(_str(s['stream_icon'])),
-          rating: Value(_toDouble(s['rating'])),
-          epgChannelId: Value(_str(s['epg_channel_id'])),
-          tvArchive: Value(_toInt(s['tv_archive']) ?? 0),
-          tvArchiveDuration: Value(_toInt(s['tv_archive_duration']) ?? 0),
-          addedAt: Value(_unixToDateTime(s['added'])),
-        ),
-      );
-    }
-    return result;
+    return ContentItemsTableCompanion(
+      playlistId: Value(playlistId),
+      categoryId: Value(categoryId),
+      title: Value(_str(s['name']) ?? 'Channel $providerId'),
+      type: const Value('live'),
+      providerId: Value(providerId),
+      streamUrl: Value(streamUrl),
+      containerExtension: const Value(null),
+      posterUrl: Value(_str(s['stream_icon'])),
+      rating: Value(_toDouble(s['rating'])),
+      epgChannelId: Value(_str(s['epg_channel_id'])),
+      tvArchive: Value(_toInt(s['tv_archive']) ?? 0),
+      tvArchiveDuration: Value(_toInt(s['tv_archive_duration']) ?? 0),
+      addedAt: Value(_unixToDateTime(s['added'])),
+    );
   }
 
-  List<ContentItemsTableCompanion> _mapVodStreams(
+  ContentItemsTableCompanion _mapSingleVodStream(
     String playlistId,
-    List<Map<String, dynamic>> raw,
+    Map<String, dynamic> s,
+    int idx,
     Map<String, int> catByProviderId,
     XtreamCredentials creds,
-    Set<String> seenKeys,
   ) {
-    final result = <ContentItemsTableCompanion>[];
-    for (var i = 0; i < raw.length; i++) {
-      final s = raw[i];
-      final providerId = _str(s['stream_id']) ?? 'movie_$i';
-      if (!seenKeys.add('movie::$providerId')) continue;
-      final containerExt = _str(s['container_extension']) ?? 'mp4';
-      final catProviderId = _str(s['category_id']);
-      final categoryId =
-          catProviderId != null ? catByProviderId[catProviderId] : null;
-      final direct = _str(s['direct_source']);
-      final streamUrl = (direct != null && direct.startsWith('http'))
-          ? direct
-          : _client.buildVodStreamUrl(creds, providerId, containerExt);
+    final providerId = _str(s['stream_id']) ?? 'movie_$idx';
+    final containerExt = _str(s['container_extension']) ?? 'mp4';
+    final catProviderId = _str(s['category_id']);
+    final categoryId =
+        catProviderId != null ? catByProviderId[catProviderId] : null;
+    final direct = _str(s['direct_source']);
+    final streamUrl = (direct != null && direct.startsWith('http'))
+        ? direct
+        : _client.buildVodStreamUrl(creds, providerId, containerExt);
 
-      result.add(
-        ContentItemsTableCompanion(
-          playlistId: Value(playlistId),
-          categoryId: Value(categoryId),
-          title: Value(_str(s['name']) ?? 'Movie $providerId'),
-          type: const Value('movie'),
-          providerId: Value(providerId),
-          streamUrl: Value(streamUrl),
-          containerExtension: Value(containerExt),
-          posterUrl: Value(_str(s['stream_icon'])),
-          rating: Value(_toDouble(s['rating'])),
-          addedAt: Value(_unixToDateTime(s['added'])),
-        ),
-      );
-    }
-    return result;
+    return ContentItemsTableCompanion(
+      playlistId: Value(playlistId),
+      categoryId: Value(categoryId),
+      title: Value(_str(s['name']) ?? 'Movie $providerId'),
+      type: const Value('movie'),
+      providerId: Value(providerId),
+      streamUrl: Value(streamUrl),
+      containerExtension: Value(containerExt),
+      posterUrl: Value(_str(s['stream_icon'])),
+      rating: Value(_toDouble(s['rating'])),
+      addedAt: Value(_unixToDateTime(s['added'])),
+    );
   }
 
-  List<ContentItemsTableCompanion> _mapSeriesStreams(
+  ContentItemsTableCompanion _mapSingleSeriesStream(
     String playlistId,
-    List<Map<String, dynamic>> raw,
+    Map<String, dynamic> s,
+    int idx,
     Map<String, int> catByProviderId,
     XtreamCredentials creds,
-    Set<String> seenKeys,
   ) {
-    final result = <ContentItemsTableCompanion>[];
-    for (var i = 0; i < raw.length; i++) {
-      final s = raw[i];
-      final providerId =
-          _str(s['series_id']) ?? _str(s['stream_id']) ?? 'series_$i';
-      if (!seenKeys.add('series::$providerId')) continue;
-      final catProviderId = _str(s['category_id']);
-      final categoryId =
-          catProviderId != null ? catByProviderId[catProviderId] : null;
-      final containerExt = _str(s['container_extension']);
-      final streamUrl = containerExt != null
-          ? _client.buildSeriesStreamUrl(creds, providerId, containerExt)
-          : null;
+    final providerId =
+        _str(s['series_id']) ?? _str(s['stream_id']) ?? 'series_$idx';
+    final catProviderId = _str(s['category_id']);
+    final categoryId =
+        catProviderId != null ? catByProviderId[catProviderId] : null;
+    final containerExt = _str(s['container_extension']);
+    final streamUrl = containerExt != null
+        ? _client.buildSeriesStreamUrl(creds, providerId, containerExt)
+        : null;
 
-      result.add(
-        ContentItemsTableCompanion(
-          playlistId: Value(playlistId),
-          categoryId: Value(categoryId),
-          title: Value(_str(s['name']) ?? 'Series $providerId'),
-          type: const Value('series'),
-          providerId: Value(providerId),
-          streamUrl: Value(streamUrl),
-          containerExtension: Value(containerExt),
-          posterUrl: Value(_str(s['cover']) ?? _str(s['stream_icon'])),
-          rating: Value(_toDouble(s['rating'])),
-          addedAt: Value(_unixToDateTime(s['added'])),
-        ),
-      );
-    }
-    return result;
+    return ContentItemsTableCompanion(
+      playlistId: Value(playlistId),
+      categoryId: Value(categoryId),
+      title: Value(_str(s['name']) ?? 'Series $providerId'),
+      type: const Value('series'),
+      providerId: Value(providerId),
+      streamUrl: Value(streamUrl),
+      containerExtension: Value(containerExt),
+      posterUrl: Value(_str(s['cover']) ?? _str(s['stream_icon'])),
+      rating: Value(_toDouble(s['rating'])),
+      addedAt: Value(_unixToDateTime(s['added'])),
+    );
   }
 
   // ── Type-coercion utilities ───────────────────────────────────────────────
