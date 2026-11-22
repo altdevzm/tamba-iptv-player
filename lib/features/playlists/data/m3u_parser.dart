@@ -43,6 +43,117 @@ Future<List<ParsedChannel>> parseM3u(String content) {
   return Isolate.run(() => _parseM3uSync(content));
 }
 
+/// Incremental, constant-memory M3U line-by-line parser for massive playlists
+/// (100k–500k+ channels / 100+ MB files) that would otherwise trigger OOM.
+class M3uStreamParser {
+  final Map<String, String> _kodiProps = {};
+  final Map<String, String> _vlcHeaders = {};
+  String? _pendingExtinf;
+  String? _pendingExtGrp;
+  bool _isFirstLine = true;
+  int _emittedCount = 0;
+
+  /// Feeds a single line from a `LineSplitter` stream. Returns a [ParsedChannel]
+  /// whenever a complete entry is recognized, or `null` otherwise.
+  ParsedChannel? feedLine(String line) {
+    var raw = line;
+    if (_isFirstLine) {
+      _isFirstLine = false;
+      if (raw.startsWith('\uFEFF')) {
+        raw = raw.substring(1);
+      }
+    }
+    raw = raw.trim();
+    if (raw.isEmpty) return null;
+
+    final upper = raw.toUpperCase();
+    if (upper.startsWith('#EXTM3U')) return null;
+
+    if (upper.startsWith('#KODIPROP:')) {
+      final kv = raw.substring('#KODIPROP:'.length);
+      final eqIdx = kv.indexOf('=');
+      if (eqIdx > 0) {
+        _kodiProps[kv.substring(0, eqIdx).trim()] =
+            kv.substring(eqIdx + 1).trim();
+      }
+      return null;
+    }
+
+    if (upper.startsWith('#EXTVLCOPT:')) {
+      final kv = raw.substring('#EXTVLCOPT:'.length);
+      final eqIdx = kv.indexOf('=');
+      if (eqIdx > 0) {
+        final key = kv.substring(0, eqIdx).trim().toLowerCase();
+        final value = kv.substring(eqIdx + 1).trim();
+        if (key == 'http-user-agent' && value.isNotEmpty) {
+          _vlcHeaders['User-Agent'] = value;
+        } else if (key == 'http-referrer' && value.isNotEmpty) {
+          _vlcHeaders['Referer'] = value;
+        }
+      }
+      return null;
+    }
+
+    if (upper.startsWith('#EXTGRP:')) {
+      final grp = raw.substring('#EXTGRP:'.length).trim();
+      if (grp.isNotEmpty) _pendingExtGrp = grp;
+      return null;
+    }
+
+    if (upper.startsWith('#EXTINF:') || upper.startsWith('#EXTINF ')) {
+      _pendingExtinf = raw;
+      return null;
+    }
+
+    if (raw.startsWith('#')) return null;
+
+    ParsedChannel? channel;
+    if (_pendingExtinf != null) {
+      channel = _buildChannel(
+        extinf: _pendingExtinf!,
+        rawUrl: raw,
+        kodiProps: _kodiProps.isEmpty
+            ? const {}
+            : Map<String, String>.from(_kodiProps),
+        vlcHeaders: _vlcHeaders.isEmpty
+            ? const {}
+            : Map<String, String>.from(_vlcHeaders),
+        extGrp: _pendingExtGrp,
+      );
+    } else if (raw.startsWith('http://') ||
+        raw.startsWith('https://') ||
+        raw.startsWith('rtsp://') ||
+        raw.startsWith('rtmp://')) {
+      final streamUrl = _extractStreamUrl(raw);
+      if (streamUrl.isNotEmpty) {
+        final uri = Uri.tryParse(streamUrl);
+        final fallbackTitle = (uri != null && uri.pathSegments.isNotEmpty)
+            ? uri.pathSegments.last
+            : 'Channel ${_emittedCount + 1}';
+        channel = ParsedChannel(
+          title: fallbackTitle,
+          groupTitle: _emptyToNull(_pendingExtGrp),
+          streamUrl: streamUrl,
+          streamHeaders: _vlcHeaders.isEmpty && !raw.contains('|')
+              ? const {}
+              : {..._vlcHeaders, ..._extractPipeHeaders(raw)},
+          kodiProps: _kodiProps.isEmpty
+              ? const {}
+              : Map<String, String>.from(_kodiProps),
+        );
+      }
+    }
+
+    _pendingExtinf = null;
+    _pendingExtGrp = null;
+    _kodiProps.clear();
+    _vlcHeaders.clear();
+
+    if (channel != null) _emittedCount++;
+    return channel;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Top-level isolate entry point (must be a top-level function, not a closure)
 // ---------------------------------------------------------------------------
