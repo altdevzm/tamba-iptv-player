@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:dio/dio.dart';
 import 'package:drift/drift.dart' as drift;
 
 import '../../../core/persistence/app_database.dart';
@@ -79,11 +79,9 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
     return trimmed;
   }
 
-  /// Downloads the raw M3U text from [url] via Dio as raw bytes so:
-  /// - Dart's HttpClient handles HTTP gzip automatically (never setting a
-  ///   manual Accept-Encoding header that disables autoUncompress),
-  /// - `.m3u.gz` files are transparently decompressed via magic bytes, and
-  /// - non-UTF-8 (Latin-1 / Windows-1252) channel names never crash decoding.
+  /// Downloads the raw M3U text from [url] using a streaming `HttpClient`
+  /// configured for IPTV providers (tolerant of self-signed HTTPS redirects,
+  /// large chunked `get.php` streams, gzip payloads, and non-UTF-8 encodings).
   Future<String> _downloadM3u(
     String url, {
     void Function(String status)? onProgress,
@@ -93,52 +91,93 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
       throw Exception('Please enter a valid M3U playlist URL.');
     }
 
-    var lastProgressMs = 0;
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) {
+      throw Exception('Invalid M3U playlist URL.');
+    }
+
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 30)
+      ..idleTimeout = const Duration(minutes: 3)
+      ..autoUncompress = true
+      ..badCertificateCallback = (_, __, ___) => true;
 
     try {
-      final response = await _apiClient.dio.get<List<int>>(
-        normalized,
-        options: Options(
-          responseType: ResponseType.bytes,
-          receiveTimeout: const Duration(minutes: 3),
-          sendTimeout: const Duration(seconds: 30),
-          followRedirects: true,
-          maxRedirects: 5,
-          headers: const {
-            'User-Agent': 'VLC/3.0.18 LibVLC/3.0.18',
-            'Accept': '*/*',
-          },
-        ),
-        onReceiveProgress: (received, total) {
-          final now = DateTime.now().millisecondsSinceEpoch;
-          if (now - lastProgressMs < 250) return;
-          lastProgressMs = now;
-          final mb = (received / (1024 * 1024)).toStringAsFixed(1);
-          if (total > 0) {
-            final pct = ((received / total) * 100).clamp(0, 100).round();
-            final totalMb = (total / (1024 * 1024)).toStringAsFixed(1);
-            onProgress?.call('Downloading M3U... $pct% ($mb / $totalMb MB)');
-          } else {
-            onProgress?.call('Downloading M3U... $mb MB');
+      String userAgent = 'IPTVSmartersPro/1.0.0 (Linux; Android) VLC/3.0.18';
+      String? customReferer;
+      if (_apiClient.storage != null) {
+        try {
+          final customUa = await _apiClient.storage!
+              .getPlaylistCredentials('filimu_custom_user_agent');
+          if (customUa != null && customUa.trim().isNotEmpty) {
+            userAgent = customUa.trim();
           }
-        },
-      );
+          final ref = await _apiClient.storage!
+              .getPlaylistCredentials('filimu_custom_referer');
+          if (ref != null && ref.trim().isNotEmpty) {
+            customReferer = ref.trim();
+          }
+        } catch (_) {}
+      }
 
-      final statusCode = response.statusCode ?? 200;
+      final request = await client.getUrl(uri);
+      request.followRedirects = true;
+      request.maxRedirects = 8;
+      request.headers.set(HttpHeaders.userAgentHeader, userAgent);
+      request.headers.set(HttpHeaders.acceptHeader, '*/*');
+      if (customReferer != null) {
+        request.headers.set(HttpHeaders.refererHeader, customReferer);
+      }
+
+      final response = await request.close().timeout(
+            const Duration(minutes: 3),
+          );
+
+      final statusCode = response.statusCode;
       if (statusCode >= 400) {
         throw Exception(
           'Server returned HTTP $statusCode while downloading M3U.',
         );
       }
 
-      var bytes = response.data ?? const <int>[];
+      final totalBytes = response.contentLength;
+      final builder = BytesBuilder(copy: false);
+      var received = 0;
+      var lastProgressMs = 0;
+
+      try {
+        await for (final chunk in response) {
+          builder.add(chunk);
+          received += chunk.length;
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (now - lastProgressMs >= 250) {
+            lastProgressMs = now;
+            final mb = (received / (1024 * 1024)).toStringAsFixed(1);
+            if (totalBytes > 0) {
+              final pct = ((received / totalBytes) * 100).clamp(0, 100).round();
+              final totalMb = (totalBytes / (1024 * 1024)).toStringAsFixed(1);
+              onProgress?.call('Downloading M3U... $pct% ($mb / $totalMb MB)');
+            } else {
+              onProgress?.call('Downloading M3U... $mb MB');
+            }
+          }
+        }
+      } on HttpException catch (e) {
+        // Many IPTV servers close the TCP connection right after the final
+        // channel without a clean chunk terminator. Keep data if non-empty.
+        if (builder.isEmpty) {
+          throw Exception('Connection interrupted while downloading M3U: ${e.message}');
+        }
+      }
+
+      var bytes = builder.takeBytes();
       if (bytes.isEmpty) {
         throw Exception('The server returned an empty M3U playlist.');
       }
 
       // Transparently decompress raw gzip payloads (magic bytes 0x1F 0x8B)
       if (bytes.length >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B) {
-        bytes = gzip.decode(bytes);
+        bytes = Uint8List.fromList(gzip.decode(bytes));
       }
 
       final text = utf8.decode(bytes, allowMalformed: true);
@@ -146,20 +185,16 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
         throw Exception('The server returned an empty M3U playlist.');
       }
       return text;
-    } on DioException catch (e) {
-      final status = e.response?.statusCode;
-      if (status != null) {
-        throw Exception('Server returned HTTP $status while downloading M3U.');
-      }
-      if (e.type == DioExceptionType.connectionTimeout ||
-          e.type == DioExceptionType.receiveTimeout) {
-        throw Exception(
-          'Timed out downloading M3U playlist. Please check the URL and your connection.',
-        );
-      }
+    } on SocketException catch (e) {
       throw Exception(
-        'Could not download M3U playlist: ${e.message ?? e.type.name}',
+        'Network error reaching ${uri.host}: ${e.message}',
       );
+    } on HandshakeException catch (e) {
+      throw Exception('TLS/SSL error connecting to ${uri.host}: ${e.message}');
+    } on HttpException catch (e) {
+      throw Exception('HTTP error from ${uri.host}: ${e.message}');
+    } finally {
+      client.close(force: true);
     }
   }
 
