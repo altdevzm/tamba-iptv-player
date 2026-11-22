@@ -353,6 +353,7 @@ class TissFailoverEvent {
 /// Configurable thresholds for SmartStream / TISS failover & quality recovery.
 class TissConfig {
   final SmartStreamMode mode;
+  final bool automaticSwitchingEnabled;
   final int rebufferThreshold;
   final int detectionWindowSeconds;
   final int stabilityPeriodSeconds;
@@ -366,6 +367,7 @@ class TissConfig {
 
   const TissConfig({
     this.mode = SmartStreamMode.balanced,
+    this.automaticSwitchingEnabled = true,
     this.rebufferThreshold = 2,
     this.detectionWindowSeconds = 20,
     this.stabilityPeriodSeconds = 45,
@@ -380,11 +382,13 @@ class TissConfig {
 
   factory TissConfig.forMode(
     SmartStreamMode mode, {
+    bool automaticSwitchingEnabled = true,
     bool? autoUpgradeEnabled,
     bool allowEmergencyFallbackInManualMode = true,
   }) {
     return TissConfig(
       mode: mode,
+      automaticSwitchingEnabled: automaticSwitchingEnabled,
       rebufferThreshold: mode.rebufferThreshold,
       bandwidthSafetyMargin: mode.bandwidthSafetyMargin,
       autoUpgradeEnabled: autoUpgradeEnabled ?? mode.defaultAutoUpgrade,
@@ -394,6 +398,7 @@ class TissConfig {
 
   TissConfig copyWith({
     SmartStreamMode? mode,
+    bool? automaticSwitchingEnabled,
     int? rebufferThreshold,
     int? detectionWindowSeconds,
     int? stabilityPeriodSeconds,
@@ -407,6 +412,8 @@ class TissConfig {
   }) {
     return TissConfig(
       mode: mode ?? this.mode,
+      automaticSwitchingEnabled:
+          automaticSwitchingEnabled ?? this.automaticSwitchingEnabled,
       rebufferThreshold: rebufferThreshold ?? this.rebufferThreshold,
       detectionWindowSeconds:
           detectionWindowSeconds ?? this.detectionWindowSeconds,

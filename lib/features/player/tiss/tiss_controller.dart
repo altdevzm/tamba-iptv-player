@@ -182,7 +182,7 @@ class TissController {
     final channel = _activeChannel;
     final stream = _activeStream;
     if (channel == null || stream == null || !hasAlternatives) return false;
-    if (!_isAutoMode) return false;
+    if (!_isAutoMode || !_config.automaticSwitchingEnabled) return false;
 
     final ts = now ?? DateTime.now();
     healthRegistry.recordBuffering(stream.streamId, channel.logicalId);
@@ -214,6 +214,7 @@ class TissController {
     if (channel == null || current == null || channel.alternatives.length < 2) {
       return null;
     }
+    if (!_config.automaticSwitchingEnabled) return null;
     if (!_isAutoMode && !allowFallbackInManualMode) return null;
 
     final ts = now ?? DateTime.now();

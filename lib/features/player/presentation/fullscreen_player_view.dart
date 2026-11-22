@@ -13,6 +13,7 @@ import '../data/player_controller.dart';
 import '../data/stream_recording_service.dart';
 import '../data/external_player_service.dart';
 import '../domain/playback_enums.dart';
+import '../tiss/tiss_models.dart';
 import 'widgets/diagnostics_panel.dart';
 import 'widgets/engine_video_surface.dart';
 import 'widgets/playback_speed_sheet.dart';
@@ -1070,6 +1071,181 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     );
   }
 
+  void _showSmartStreamQualitySheet(
+    BuildContext context,
+    PlayerController controller,
+  ) {
+    final tiss = controller.tissController;
+    final logical = tiss.activeChannel;
+    final abrRenditions = controller.availableRenditions;
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF16161C),
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Stream Quality',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Auto Quality Intelligence',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.6),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: SmartStreamMode.values.map((mode) {
+                  final selected = controller.smartStreamMode == mode;
+                  return ChoiceChip(
+                    label: Text(mode.label),
+                    selected: selected,
+                    onSelected: (_) {
+                      controller.setSmartStreamMode(mode);
+                      Navigator.pop(sheetCtx);
+                    },
+                    backgroundColor: Colors.white.withValues(alpha: 0.06),
+                    selectedColor: AppColors.primary,
+                    labelStyle: TextStyle(
+                      color: selected ? Colors.white : Colors.white70,
+                      fontSize: 12,
+                      fontWeight:
+                          selected ? FontWeight.w700 : FontWeight.w500,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                      side: BorderSide(
+                        color: selected
+                            ? AppColors.primary
+                            : Colors.white.withValues(alpha: 0.12),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+              const Divider(color: Colors.white12, height: 1),
+              const SizedBox(height: 8),
+              if (logical != null && logical.alternatives.length > 1) ...[
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.auto_awesome_rounded,
+                    color: tiss.isAutoMode ? AppColors.primary : Colors.white60,
+                    size: 20,
+                  ),
+                  title: const Text('Auto (SmartStream)',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                    'Automatically switches quality if buffering occurs',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.5),
+                        fontSize: 11.5),
+                  ),
+                  trailing: tiss.isAutoMode
+                      ? const Icon(Icons.check_rounded,
+                          color: AppColors.primary)
+                      : null,
+                  onTap: () {
+                    controller.selectTissQuality(null);
+                    Navigator.pop(sheetCtx);
+                  },
+                ),
+                ...logical.alternatives.map((alt) {
+                  final isSelected = !tiss.isAutoMode &&
+                      tiss.activeStream?.streamId == alt.streamId;
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      Icons.hd_outlined,
+                      color: isSelected ? AppColors.primary : Colors.white54,
+                      size: 20,
+                    ),
+                    title: Text(
+                      alt.qualityMenuLabel,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      alt.qualitySource.label,
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.45),
+                          fontSize: 11.5),
+                    ),
+                    trailing: isSelected
+                        ? const Icon(Icons.check_rounded,
+                            color: AppColors.primary)
+                        : null,
+                    onTap: () {
+                      controller.selectTissQuality(alt);
+                      Navigator.pop(sheetCtx);
+                    },
+                  );
+                }),
+              ] else if (abrRenditions.isNotEmpty) ...[
+                ...abrRenditions.map((r) {
+                  final isSelected = controller.selectedRendition.id == r.id;
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(r.label,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 14)),
+                    trailing: isSelected
+                        ? const Icon(Icons.check_rounded,
+                            color: AppColors.primary)
+                        : null,
+                    onTap: () {
+                      controller.selectQuality(r);
+                      Navigator.pop(sheetCtx);
+                    },
+                  );
+                }),
+              ] else
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Text(
+                    'Only a single fixed-quality stream is available for this channel.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 12.5,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showPlayerOptionsSheet(
     BuildContext context,
     PlayerState playerState,
@@ -1093,6 +1269,37 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // SmartStream Quality & Mode Selector
+              ListTile(
+                leading: const Icon(Icons.high_quality_rounded,
+                    color: AppColors.primary),
+                title: const Text('Stream Quality',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+                subtitle: Text(
+                  'SmartStream: ${controller.smartStreamMode.label}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11.5),
+                ),
+                trailing: Text(
+                  controller.tissController.hasAlternatives
+                      ? (controller.tissController.isAutoMode
+                          ? 'Auto (${controller.tissController.activeStream?.displayQuality ?? "HD"})'
+                          : (controller.tissController.activeStream
+                                  ?.qualityMenuLabel ??
+                              'Auto'))
+                      : (controller.availableRenditions.isNotEmpty
+                          ? controller.selectedRendition.label
+                          : 'Auto'),
+                  style: const TextStyle(
+                    color: AppColors.primary,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  _showSmartStreamQualitySheet(context, controller);
+                },
+              ),
               if (item.type != MediaType.live)
                 ListTile(
                   leading: const Icon(Icons.speed_rounded, color: Colors.white),

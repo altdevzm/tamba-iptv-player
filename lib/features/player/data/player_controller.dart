@@ -229,12 +229,21 @@ class PlayerController extends StateNotifier<PlayerState>
         _storage.getPlaylistCredentials('filimu_playback_profile'),
         _storage.getPlaylistCredentials('filimu_playback_engine'),
         _storage.getPlaylistCredentials('filimu_smartstream_mode'),
+        _storage.getPlaylistCredentials('filimu_smartstream_auto_switch'),
+        _storage.getPlaylistCredentials('filimu_smartstream_auto_upgrade'),
       ]);
       final savedSmartMode = SmartStreamMode.values.firstWhere(
         (m) => m.name == values[4],
         orElse: () => SmartStreamMode.balanced,
       );
       tissController.setMode(savedSmartMode);
+      tissController.updateConfig(
+        tissController.config.copyWith(
+          automaticSwitchingEnabled: values[5] != 'false',
+          autoUpgradeEnabled:
+              values[6] == null ? savedSmartMode.defaultAutoUpgrade : values[6] != 'false',
+        ),
+      );
       final formatValue = values[1];
       final format = LiveStreamFormat.values.firstWhere(
         (value) => value.name == formatValue,
@@ -1224,6 +1233,22 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   SmartStreamMode get smartStreamMode => tissController.config.mode;
+  bool get automaticSwitchingEnabled =>
+      tissController.config.automaticSwitchingEnabled;
+  bool get autoUpgradeEnabled => tissController.config.autoUpgradeEnabled;
+
+  Future<void> setAutomaticSwitching(bool enabled) async {
+    tissController.updateConfig(
+      tissController.config.copyWith(automaticSwitchingEnabled: enabled),
+    );
+    try {
+      await _storage.savePlaylistCredentials(
+        'filimu_smartstream_auto_switch',
+        enabled ? 'true' : 'false',
+      );
+    } catch (_) {}
+    state = state.copyWith();
+  }
 
   Future<void> setSmartStreamMode(SmartStreamMode mode) async {
     tissController.setMode(mode);
@@ -1243,10 +1268,16 @@ class PlayerController extends StateNotifier<PlayerState>
     state = state.copyWith();
   }
 
-  void toggleTissAutoUpgrade(bool enabled) {
+  Future<void> toggleTissAutoUpgrade(bool enabled) async {
     tissController.updateConfig(
       tissController.config.copyWith(autoUpgradeEnabled: enabled),
     );
+    try {
+      await _storage.savePlaylistCredentials(
+        'filimu_smartstream_auto_upgrade',
+        enabled ? 'true' : 'false',
+      );
+    } catch (_) {}
     state = state.copyWith();
   }
 

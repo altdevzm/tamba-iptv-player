@@ -1,12 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/persistence/database_provider.dart';
@@ -17,6 +16,7 @@ import '../../epg/presentation/epg_notifier.dart';
 import '../../player/data/libvlc_bridge.dart';
 import '../../player/data/player_controller.dart';
 import '../../player/domain/playback_enums.dart';
+import '../../player/tiss/tiss_models.dart';
 import '../../../shared/services/tmdb_service.dart';
 import '../data/backup_service.dart';
 import '../../remote_control/data/remote_control_server.dart';
@@ -178,6 +178,136 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                               );
                         } catch (_) {}
                       },
+                    );
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // ── Auto Quality Intelligence ──
+            _buildSectionHeader('Auto Quality Intelligence'),
+            const SizedBox(height: 14),
+            GlassContainer(
+              padding: EdgeInsets.all(isMobile ? 16 : 24),
+              borderRadius: 16,
+              child: Material(
+                type: MaterialType.transparency,
+                child: Builder(
+                  builder: (context) {
+                    ref.watch(playerControllerProvider);
+                    final ctrl = ref.read(playerControllerProvider.notifier);
+                    final autoSwitch = ctrl.automaticSwitchingEnabled;
+                    final autoUpgrade = ctrl.autoUpgradeEnabled;
+                    final pref = ctrl.smartStreamMode;
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          activeThumbColor: AppColors.primary,
+                          activeTrackColor:
+                              AppColors.primary.withValues(alpha: 0.4),
+                          title: const Text(
+                            'Automatic switching',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Automatically switch to a sustainable quality alternative when a stream buffers or fails.',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.55),
+                              fontSize: 12,
+                            ),
+                          ),
+                          value: autoSwitch,
+                          onChanged: (v) => ctrl.setAutomaticSwitching(v),
+                        ),
+                        Divider(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          height: 16,
+                        ),
+                        SwitchListTile.adaptive(
+                          contentPadding: EdgeInsets.zero,
+                          activeThumbColor: AppColors.primary,
+                          activeTrackColor:
+                              AppColors.primary.withValues(alpha: 0.4),
+                          title: const Text(
+                            'Automatic upgrades',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Gradually restore higher video quality once your connection stabilizes.',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.55),
+                              fontSize: 12,
+                            ),
+                          ),
+                          value: autoUpgrade,
+                          onChanged: autoSwitch
+                              ? (v) => ctrl.toggleTissAutoUpgrade(v)
+                              : null,
+                        ),
+                        Divider(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          height: 20,
+                        ),
+                        Text(
+                          'Preference',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.85),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: SmartStreamMode.values.map((mode) {
+                            final selected = pref == mode;
+                            return ChoiceChip(
+                              label: Text(mode.label),
+                              selected: selected,
+                              onSelected: (_) => ctrl.setSmartStreamMode(mode),
+                              backgroundColor:
+                                  Colors.white.withValues(alpha: 0.05),
+                              selectedColor: AppColors.primary,
+                              labelStyle: TextStyle(
+                                color: selected ? Colors.white : Colors.white70,
+                                fontSize: 12.5,
+                                fontWeight: selected
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                                side: BorderSide(
+                                  color: selected
+                                      ? AppColors.primary
+                                      : Colors.white.withValues(alpha: 0.14),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          pref.description,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.5),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -444,14 +574,14 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   _buildActionRow(
                     'Export Backup (.json)',
-                    'Export all playlists, credentials, and favorites into a backup file',
+                    'Save playlists, favorites, and settings to your Downloads folder',
                     Icons.upload_file_rounded,
                     _exportBackup,
                   ),
                   _buildDivider(),
                   _buildActionRow(
                     'Restore from Backup (.json)',
-                    'Import playlists, favorites, and settings from a backup file',
+                    'Select a backup .json file from Downloads to restore your setup',
                     Icons.file_download_rounded,
                     _importBackup,
                   ),
@@ -637,7 +767,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   _buildInfoRow('Application', 'Tamba IPTV'),
                   _buildDivider(),
-                  _buildInfoRow('Version', '1.0.0'),
+                  _buildInfoRow('Version', '1.0.9'),
                   _buildDivider(),
                   _buildInfoRow('Built With', 'Flutter + Dart'),
                   _buildDivider(),
@@ -1107,10 +1237,16 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
           style: TextStyle(
               color: Colors.white.withValues(alpha: 0.6), fontSize: 13),
         ),
-        Text(
-          value,
-          style: const TextStyle(
-              color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+        const SizedBox(width: 16),
+        Flexible(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.end,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+          ),
         ),
       ],
     );
@@ -1209,20 +1345,18 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
   Future<void> _exportBackup() async {
     try {
       final backup = ref.read(backupServiceProvider);
-      final jsonContent = await backup.exportBackupJson();
-
-      final docsDir = await getApplicationDocumentsDirectory();
-      final dateStr = DateFormat('yyyy-MM-dd_HH-mm').format(DateTime.now());
-      final backupFile =
-          File(p.join(docsDir.path, 'filimu_plus_backup_$dateStr.json'));
-      await backupFile.writeAsString(jsonContent);
+      final result = await backup.saveBackupToDownloads();
+      if (result.cancelled) return;
 
       if (mounted) {
+        final destination = result.savedToDownloads
+            ? 'Backup saved to Downloads:'
+            : 'Backup saved successfully to:';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Backup saved successfully to:\n${backupFile.path}'),
+            content: Text('$destination\n${result.filePath}'),
             backgroundColor: Colors.green,
-            duration: const Duration(seconds: 4),
+            duration: const Duration(seconds: 5),
           ),
         );
       }
@@ -1238,23 +1372,42 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
 
   Future<void> _importBackup() async {
     try {
+      final useAnyFilter = !kIsWeb && Platform.isAndroid;
       final res = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
+        dialogTitle: 'Select Tamba IPTV Backup (.json)',
+        type: useAnyFilter ? FileType.any : FileType.custom,
+        allowedExtensions: useAnyFilter ? null : ['json'],
+        withData: true,
       );
       if (res == null || res.files.isEmpty) return;
 
-      final file = res.files.first.xFile;
-      final content = await file.readAsString();
+      final picked = res.files.first;
+      final String content;
+      if (picked.bytes != null) {
+        content = utf8.decode(picked.bytes!);
+      } else {
+        final bytes = await picked.xFile.readAsBytes();
+        content = utf8.decode(bytes);
+      }
+
       final backup = ref.read(backupServiceProvider);
-      final count = await backup.importBackupJson(content);
+      final result = await backup.importBackupDetailed(content);
+
+      // Refresh in-memory settings immediately after restore.
+      await _loadTmdbSettings();
+      if (result.forceTvMode != null) {
+        DeviceFormFactor.forceTvMode.value = result.forceTvMode!;
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
-                Text('Restored $count playlists and settings successfully'),
+            content: Text(
+              'Restored ${result.playlistsCount} playlist(s), '
+              '${result.favoritesCount} favorite(s), and settings',
+            ),
             backgroundColor: Colors.green,
+            duration: const Duration(seconds: 4),
           ),
         );
       }
@@ -1262,7 +1415,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Import failed: $e'), backgroundColor: Colors.red),
+              content: Text('Restore failed: $e'), backgroundColor: Colors.red),
         );
       }
     }
