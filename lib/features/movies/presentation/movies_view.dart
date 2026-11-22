@@ -1576,6 +1576,8 @@ class _FocusableMovieCardState extends State<_FocusableMovieCard> {
                 CachedNetworkImage(
                   imageUrl: movie.posterUrl!,
                   fit: BoxFit.cover,
+                  memCacheWidth: 300,
+                  maxWidthDiskCache: 400,
                   errorWidget: (_, __, ___) => widget.placeholderBuilder(movie),
                 )
               else

@@ -70,8 +70,24 @@ class AppDatabase extends _$AppDatabase {
           .watch();
 
   Future<void> batchInsertCategories(List<CategoriesTableCompanion> entries) async {
+    if (entries.isEmpty) return;
     await batch((b) {
-      b.insertAllOnConflictUpdate(categoriesTable, entries);
+      for (final entry in entries) {
+        b.insert(
+          categoriesTable,
+          entry,
+          onConflict: DoUpdate(
+            (_) => CategoriesTableCompanion(
+              name: entry.name,
+            ),
+            target: [
+              categoriesTable.playlistId,
+              categoriesTable.type,
+              categoriesTable.providerId,
+            ],
+          ),
+        );
+      }
     });
   }
 
@@ -125,8 +141,22 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> batchInsertContentItems(List<ContentItemsTableCompanion> entries) async {
+    if (entries.isEmpty) return;
     await batch((b) {
-      b.insertAllOnConflictUpdate(contentItemsTable, entries);
+      for (final entry in entries) {
+        b.insert(
+          contentItemsTable,
+          entry,
+          onConflict: DoUpdate(
+            (_) => entry,
+            target: [
+              contentItemsTable.playlistId,
+              contentItemsTable.type,
+              contentItemsTable.providerId,
+            ],
+          ),
+        );
+      }
     });
   }
 

@@ -1506,6 +1506,8 @@ class _ChannelLogo extends StatelessWidget {
             ? CachedNetworkImage(
                 imageUrl: logoUrl!,
                 fit: BoxFit.contain,
+                memCacheWidth: 120,
+                maxWidthDiskCache: 160,
                 errorWidget: (_, __, ___) => const _LogoFallback(),
                 placeholder: (_, __) => const _LogoFallback(),
               )

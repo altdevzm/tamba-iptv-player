@@ -109,6 +109,8 @@ class _PosterCardState extends State<PosterCard> {
                     CachedNetworkImage(
                       imageUrl: widget.item.posterUrl!,
                       fit: BoxFit.cover,
+                      memCacheWidth: 320,
+                      maxWidthDiskCache: 400,
                       placeholder: (context, url) =>
                           Container(color: AppColors.surfaceElevated),
                       errorWidget: (context, url, err) =>

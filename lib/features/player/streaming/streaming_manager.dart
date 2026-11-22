@@ -41,9 +41,10 @@ class StreamingManager {
         (defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS);
     final cache = PaintingBinding.instance.imageCache;
-    cache.maximumSize = isMobileOrTv ? 180 : 350;
+    // Keep decoded bitmap memory strictly bounded for 1GB-2GB Android TV boxes
+    cache.maximumSize = isMobileOrTv ? 100 : 300;
     cache.maximumSizeBytes =
-        (isMobileOrTv ? 75 : 150) * 1024 * 1024; // 75 MiB mobile/TV, 150 MiB desktop
+        (isMobileOrTv ? 40 : 120) * 1024 * 1024; // 40 MiB mobile/TV, 120 MiB desktop
   }
 
   /// Resolves the active [BufferConfig] for the current platform and stream type.

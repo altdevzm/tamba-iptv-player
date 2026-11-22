@@ -5,6 +5,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../../core/diagnostics/app_logger.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/network/api_client.dart';
 import '../domain/playlist_repository.dart';
@@ -14,6 +15,9 @@ import 'm3u_parser.dart';
 class PlaylistRepositoryImpl implements PlaylistRepository {
   final AppDatabase _db;
   final ApiClient _apiClient;
+
+  /// Prevents multiple simultaneous refresh/import operations for the same playlist.
+  static final Set<String> _activeImports = <String>{};
 
   const PlaylistRepositoryImpl(AppDatabase db, ApiClient apiClient)
       : _db = db,
@@ -27,24 +31,34 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
     String url, {
     void Function(String status)? onProgress,
   }) async {
-    onProgress?.call('Connecting to M3U server...');
-    final tempFile = await _downloadM3uToTempFile(
-      playlistId,
-      url,
-      onProgress: onProgress,
-    );
+    if (!_activeImports.add(playlistId)) {
+      throw Exception('This playlist is already updating. Please wait.');
+    }
     try {
-      await _streamParseAndStoreFile(
+      onProgress?.call('Connecting to M3U server...');
+      final tempFile = await _downloadM3uToTempFile(
         playlistId,
-        tempFile,
+        url,
         onProgress: onProgress,
       );
-    } finally {
       try {
-        if (await tempFile.exists()) {
-          await tempFile.delete();
-        }
-      } catch (_) {}
+        await _streamParseAndStoreFile(
+          playlistId,
+          tempFile,
+          onProgress: onProgress,
+        );
+      } finally {
+        try {
+          if (await tempFile.exists()) {
+            await tempFile.delete();
+          }
+        } catch (_) {}
+      }
+    } catch (e, st) {
+      AppLogger.error('M3uSync', 'Failed to import M3U URL', e, st);
+      rethrow;
+    } finally {
+      _activeImports.remove(playlistId);
     }
   }
 

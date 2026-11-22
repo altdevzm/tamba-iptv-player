@@ -1602,6 +1602,8 @@ class _FocusableSeriesCardState extends State<_FocusableSeriesCard> {
                 CachedNetworkImage(
                   imageUrl: series.posterUrl!,
                   fit: BoxFit.cover,
+                  memCacheWidth: 300,
+                  maxWidthDiskCache: 400,
                   errorWidget: (_, __, ___) =>
                       widget.placeholderBuilder(series),
                 )

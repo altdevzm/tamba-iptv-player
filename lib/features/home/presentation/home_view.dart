@@ -41,7 +41,7 @@ final homeMoviesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
   final db = ref.watch(databaseProvider);
 
   return db
-      .watchTopContentItems(playlistId, 'movie', limit: 30)
+      .watchTopContentItems(playlistId, 'movie', limit: 18)
       .map((rows) => rows.map(_toMediaItem).toList());
 });
 
@@ -61,7 +61,7 @@ final homePopularMoviesProvider =
           (t) => drift.OrderingTerm(
               expression: t.releaseYear, mode: drift.OrderingMode.desc),
         ])
-        ..limit(24))
+        ..limit(18))
       .watch()
       .map((rows) => rows.map(_toMediaItem).toList());
 });
@@ -72,7 +72,7 @@ final homeSeriesProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
   final db = ref.watch(databaseProvider);
 
   return db
-      .watchTopContentItems(playlistId, 'series', limit: 30)
+      .watchTopContentItems(playlistId, 'series', limit: 18)
       .map((rows) => rows.map(_toMediaItem).toList());
 });
 
@@ -84,7 +84,7 @@ final homeLiveTvProvider = StreamProvider.autoDispose<List<MediaItem>>((ref) {
   return (db.select(db.contentItemsTable)
         ..where((t) => t.playlistId.equals(playlistId))
         ..where((t) => t.type.equals('live'))
-        ..limit(24))
+        ..limit(18))
       .watch()
       .map((rows) {
     final sorted = List.of(rows)
