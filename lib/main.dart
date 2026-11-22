@@ -5,11 +5,23 @@ import 'package:media_kit/media_kit.dart';
 import 'core/theme/app_theme.dart';
 import 'core/routing/app_router.dart';
 import 'core/persistence/database_provider.dart';
+import 'core/security/secure_storage_service.dart';
+import 'features/content_details/domain/device_form_factor.dart';
 import 'features/remote_control/data/remote_control_server.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+
+  // Restore saved "Force Smart TV Mode" preference before first frame
+  try {
+    final storage = SecureStorageService();
+    final savedTvMode =
+        await storage.getPlaylistCredentials('filimu_force_tv_mode');
+    if (savedTvMode == 'true') {
+      DeviceFormFactor.forceTvMode.value = true;
+    }
+  } catch (_) {}
 
   runApp(
     const ProviderScope(

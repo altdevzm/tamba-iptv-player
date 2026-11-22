@@ -22,57 +22,62 @@ class PlatformNavigationShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isTv = DeviceFormFactor.isTv(context);
-    final isDesktop = DeviceFormFactor.isDesktop(context);
-    final width = MediaQuery.sizeOf(context).width;
+    return ValueListenableBuilder<bool>(
+      valueListenable: DeviceFormFactor.forceTvMode,
+      builder: (context, _, __) {
+        final isTv = DeviceFormFactor.isTv(context);
+        final isDesktop = DeviceFormFactor.isDesktop(context);
+        final width = MediaQuery.sizeOf(context).width;
 
-    if (isTv || isDesktop) {
-      final compactSidebar = isTv || width < 1000;
-      return Scaffold(
-        backgroundColor: AppColors.background,
-        body: Row(
-          children: [
-            PlatformNavigationSidebar(
-              currentRoute: currentRoute,
-              isTv: isTv,
-              compact: compactSidebar,
+        if (isTv || isDesktop) {
+          final compactSidebar = isTv || width < 1000;
+          return Scaffold(
+            backgroundColor: AppColors.background,
+            body: Row(
+              children: [
+                PlatformNavigationSidebar(
+                  currentRoute: currentRoute,
+                  isTv: isTv,
+                  compact: compactSidebar,
+                ),
+                Expanded(
+                  child: Column(
+                    children: [
+                      if (isDesktop)
+                        TopHeaderBar(
+                          onProfileTap: () => context.go('/settings'),
+                        ),
+                      Expanded(child: child),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            Expanded(
-              child: Column(
-                children: [
-                  if (isDesktop)
-                    TopHeaderBar(
-                      onProfileTap: () => context.go('/settings'),
-                    ),
-                  Expanded(child: child),
-                ],
+          );
+        }
+
+        final showBottomNavigation =
+            width < DeviceFormFactor.mobileNavigationBreakpoint;
+
+        return Scaffold(
+          backgroundColor: AppColors.background,
+          bottomNavigationBar: showBottomNavigation
+              ? FilimuMobileBottomNav(
+                  currentRoute: currentRoute,
+                  navigationShell: navigationShell,
+                )
+              : null,
+          body: Column(
+            children: [
+              FlixorTopNavBar(
+                currentRoute: currentRoute,
+                navigationShell: navigationShell,
               ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final showBottomNavigation =
-        width < DeviceFormFactor.mobileNavigationBreakpoint;
-
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      bottomNavigationBar: showBottomNavigation
-          ? FilimuMobileBottomNav(
-              currentRoute: currentRoute,
-              navigationShell: navigationShell,
-            )
-          : null,
-      body: Column(
-        children: [
-          FlixorTopNavBar(
-            currentRoute: currentRoute,
-            navigationShell: navigationShell,
+              Expanded(child: child),
+            ],
           ),
-          Expanded(child: child),
-        ],
-      ),
+        );
+      },
     );
   }
 }

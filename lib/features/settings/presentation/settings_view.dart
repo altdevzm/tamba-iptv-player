@@ -12,6 +12,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../shared/widgets/glass_container.dart';
+import '../../content_details/domain/device_form_factor.dart';
 import '../../epg/presentation/epg_notifier.dart';
 import '../../player/data/libvlc_bridge.dart';
 import '../../player/data/player_controller.dart';
@@ -132,6 +133,52 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             _buildSectionHeader('My Playlists & IPTV Providers'),
             const SizedBox(height: 14),
             _buildPlaylistsCard(context),
+            const SizedBox(height: 32),
+
+            // ── Display & Smart TV Mode Section ──
+            _buildSectionHeader('Display & Smart TV Interface'),
+            const SizedBox(height: 14),
+            GlassContainer(
+              padding: EdgeInsets.all(isMobile ? 16 : 24),
+              borderRadius: 16,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: DeviceFormFactor.forceTvMode,
+                builder: (context, forcedTv, _) {
+                  return SwitchListTile.adaptive(
+                    contentPadding: EdgeInsets.zero,
+                    activeThumbColor: AppColors.primary,
+                    activeTrackColor: AppColors.primary.withValues(alpha: 0.4),
+                    title: const Text(
+                      'Force Smart TV Mode',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      'Use the 10-foot TV sidebar, D-pad focus navigation, and full-screen TV details. Ideal for uncertified Android TV boxes or tablets.',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.55),
+                        fontSize: 12,
+                      ),
+                    ),
+                    value: forcedTv,
+                    onChanged: (enabled) async {
+                      DeviceFormFactor.forceTvMode.value = enabled;
+                      try {
+                        await ref
+                            .read(secureStorageProvider)
+                            .savePlaylistCredentials(
+                              'filimu_force_tv_mode',
+                              enabled ? 'true' : 'false',
+                            );
+                      } catch (_) {}
+                    },
+                  );
+                },
+              ),
+            ),
             const SizedBox(height: 32),
 
             // EPG / XMLTV Section

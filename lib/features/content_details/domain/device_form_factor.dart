@@ -10,8 +10,14 @@ enum DetailsPresentationMode {
 class DeviceFormFactor {
   static const double mobileNavigationBreakpoint = 768;
 
-  /// Detects Android TV by its directional-navigation environment, not its size.
+  /// Manual override for uncertified Android TV boxes / AOSP devices that
+  /// report touch mode instead of `NavigationMode.directional`.
+  static final ValueNotifier<bool> forceTvMode = ValueNotifier<bool>(false);
+
+  /// Detects Android TV by its directional-navigation environment (or manual
+  /// Force TV Mode override), not its screen size.
   static bool isTv(BuildContext context) {
+    if (forceTvMode.value) return true;
     return defaultTargetPlatform == TargetPlatform.android &&
         MediaQuery.of(context).navigationMode == NavigationMode.directional;
   }
