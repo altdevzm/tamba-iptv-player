@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../shared/widgets/tv_focusable.dart';
 import '../../../shared/widgets/tv_text_field.dart';
+import '../../content_details/domain/device_form_factor.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../content_details/presentation/adaptive_details_coordinator.dart';
@@ -507,7 +509,7 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
       height: 46,
       child: TvTextField(
         controller: _controller,
-        autofocus: false,
+        autofocus: DeviceFormFactor.isTv(context),
         hintText: 'Type title, channel, genre, or keyword...',
         textInputAction: TextInputAction.search,
         borderRadius: 22,
@@ -632,17 +634,14 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
   }
 
   Widget _buildChannelSearchCard(ContentItemsTableData ch) {
-    return InkWell(
-      onTap: () => AdaptiveDetailsCoordinator.show(context, content: ch),
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        width: 220,
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF191922),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-        ),
+    return TvFocusable(
+      borderRadius: 12,
+      scaleOnFocus: 1.03,
+      backgroundColor: const Color(0xFF191922),
+      padding: const EdgeInsets.all(12),
+      onPressed: () => AdaptiveDetailsCoordinator.show(context, content: ch),
+      child: SizedBox(
+        width: 210,
         child: Row(
           children: [
             if (ch.posterUrl != null && ch.posterUrl!.isNotEmpty)
@@ -650,6 +649,8 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
                 borderRadius: BorderRadius.circular(8),
                 child: CachedNetworkImage(
                   imageUrl: ch.posterUrl!,
+                  memCacheWidth: 120,
+                  maxWidthDiskCache: 160,
                   width: 44,
                   height: 44,
                   fit: BoxFit.contain,
@@ -699,9 +700,11 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
   }
 
   Widget _buildMediaSearchCard(ContentItemsTableData item) {
-    return InkWell(
-      onTap: () => AdaptiveDetailsCoordinator.show(context, content: item),
-      borderRadius: BorderRadius.circular(10),
+    return TvFocusable(
+      borderRadius: 10,
+      scaleOnFocus: 1.04,
+      padding: const EdgeInsets.all(4),
+      onPressed: () => AdaptiveDetailsCoordinator.show(context, content: item),
       child: SizedBox(
         width: 136,
         child: Column(
@@ -716,6 +719,8 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
                     if (item.posterUrl != null && item.posterUrl!.isNotEmpty)
                       CachedNetworkImage(
                         imageUrl: item.posterUrl!,
+                        memCacheWidth: 280,
+                        maxWidthDiskCache: 360,
                         fit: BoxFit.cover,
                         errorWidget: (_, __, ___) => _mediaFallback(item.title),
                       )

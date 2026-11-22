@@ -12,6 +12,7 @@ import '../../../shared/models/media_item.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../core/security/secure_storage_service.dart';
+import '../../content_details/domain/device_form_factor.dart';
 import '../../stalker/data/stalker_client.dart';
 import '../domain/playback_enums.dart';
 import '../streaming/stream_validator.dart';
@@ -244,8 +245,21 @@ class PlayerController extends StateNotifier<PlayerState>
   PlayerController(this._db, this._storage, {Dio? dio})
       : _stalkerClient = dio != null ? StalkerClient(dio) : null,
         streamingManager = StreamingManager(dio: dio),
-        super(const PlayerState()) {
+        super(
+          PlayerState(
+            // Default to bundled LibVLC on Android TVs to avoid native libmpv
+            // EGL surface crashes on Amlogic/Realtek/MediaTek TV chipsets.
+            playbackEngine: ((DeviceFormFactor.nativeAndroidTv ||
+                        DeviceFormFactor.forceTvMode.value) &&
+                    LibVlcBridge.isSupported)
+                ? PlaybackEngine.libVlc
+                : PlaybackEngine.mediaKit,
+          ),
+        ) {
     WidgetsBinding.instance.addObserver(this);
+    if (LibVlcBridge.isSupported) {
+      _subscriptions.add(libVlcBridge.events.listen(_handleLibVlcEvent));
+    }
     _startPositionSaveTimer();
     _startStallDetection();
     _preferencesLoaded = _loadPreferences();
@@ -285,10 +299,17 @@ class PlayerController extends StateNotifier<PlayerState>
         (value) => value.name == values[2],
         orElse: () => PlaybackProfile.auto,
       );
-      final savedEngine = PlaybackEngine.values.firstWhere(
-        (value) => value.name == values[3],
-        orElse: () => PlaybackEngine.mediaKit,
-      );
+      final defaultEngine = ((DeviceFormFactor.nativeAndroidTv ||
+                  DeviceFormFactor.forceTvMode.value) &&
+              LibVlcBridge.isSupported)
+          ? PlaybackEngine.libVlc
+          : PlaybackEngine.mediaKit;
+      final savedEngine = values[3] == null
+          ? defaultEngine
+          : PlaybackEngine.values.firstWhere(
+              (value) => value.name == values[3],
+              orElse: () => defaultEngine,
+            );
       final effectiveEngine =
           (savedEngine == PlaybackEngine.libVlc && LibVlcBridge.isSupported)
               ? PlaybackEngine.libVlc
@@ -304,10 +325,6 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   void _initListeners() {
-    if (LibVlcBridge.isSupported) {
-      _subscriptions.add(libVlcBridge.events.listen(_handleLibVlcEvent));
-    }
-
     _subscriptions.add(player.stream.playing.listen((playing) {
       if (_usingLibVlc) return;
       if (!playing && state.isPlaying) {
@@ -776,9 +793,9 @@ class PlayerController extends StateNotifier<PlayerState>
     final wasFullscreen = state.isFullscreen;
     final resumePos = state.position;
 
-    // Stop previous engine cleanly before switching
+    // Stop previous engine cleanly before switching without waking media_kit
     try {
-      await player.stop();
+      if (_player != null) await _player!.stop();
     } catch (_) {}
     try {
       await libVlcBridge.stop();
@@ -1050,7 +1067,11 @@ class PlayerController extends StateNotifier<PlayerState>
 
     if (item?.type == MediaType.live &&
         previousUrl != _playbackUrlFor(item!, format: format)) {
-      await player.stop();
+      if (_usingLibVlc) {
+        await libVlcBridge.stop();
+      } else if (_player != null) {
+        await _player!.stop();
+      }
       await playItem(item, startFullscreen: state.isFullscreen);
     }
   }
@@ -1570,7 +1591,7 @@ class PlayerController extends StateNotifier<PlayerState>
 
       if (_usingLibVlc) {
         try {
-          await player.stop();
+          if (_player != null) await _player!.stop();
         } catch (_) {}
         await libVlcBridge.open(
           url: resolvedUrl,
@@ -1798,7 +1819,7 @@ class PlayerController extends StateNotifier<PlayerState>
     );
     try {
       await saveFuture;
-      await player.stop();
+      if (_player != null) await _player!.stop();
       await libVlcBridge.stop();
     } catch (_) {}
   }

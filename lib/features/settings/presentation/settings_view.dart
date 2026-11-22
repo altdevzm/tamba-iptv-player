@@ -769,7 +769,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   _buildInfoRow('Application', 'Tamba IPTV'),
                   _buildDivider(),
-                  _buildInfoRow('Version', '1.0.18'),
+                  _buildInfoRow('Version', '1.0.19'),
                   _buildDivider(),
                   _buildInfoRow('Built With', 'Flutter + Dart'),
                   _buildDivider(),
