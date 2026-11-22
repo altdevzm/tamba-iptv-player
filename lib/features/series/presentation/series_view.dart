@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../content_details/presentation/adaptive_details_coordinator.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../../../core/persistence/app_database.dart';
 import 'package:drift/drift.dart' as drift;
 import '../../../shared/models/media_item.dart';
@@ -298,41 +300,25 @@ class _SeriesViewState extends ConsumerState<SeriesView> {
   }
 
   Widget _buildSearchField(WidgetRef ref) {
-    return TextField(
+    return TvTextField(
       controller: _searchController,
+      hintText: 'Search TV series...',
+      textInputAction: TextInputAction.search,
+      borderRadius: 10,
       onChanged: (val) =>
           ref.read(seriesFilterProvider.notifier).setSearchQuery(val),
-      style: const TextStyle(color: Colors.white, fontSize: 13.5),
-      decoration: InputDecoration(
-        hintText: 'Search TV series...',
-        hintStyle: TextStyle(
-          color: Colors.white.withValues(alpha: 0.4),
-          fontSize: 13.5,
-        ),
-        prefixIcon:
-            const Icon(Icons.search_rounded, color: Colors.white54, size: 19),
-        suffixIcon: _searchController.text.isNotEmpty
-            ? IconButton(
-                icon: const Icon(Icons.close_rounded,
-                    color: Colors.white54, size: 17),
-                onPressed: () {
-                  _searchController.clear();
-                  ref.read(seriesFilterProvider.notifier).setSearchQuery('');
-                },
-              )
-            : null,
-        filled: true,
-        fillColor: AppColors.surfaceElevated,
-        contentPadding: const EdgeInsets.symmetric(vertical: 0),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
-        ),
-      ),
+      prefixIcon:
+          const Icon(Icons.search_rounded, color: Colors.white54, size: 19),
+      suffixIcon: _searchController.text.isNotEmpty
+          ? IconButton(
+              icon: const Icon(Icons.close_rounded,
+                  color: Colors.white54, size: 17),
+              onPressed: () {
+                _searchController.clear();
+                ref.read(seriesFilterProvider.notifier).setSearchQuery('');
+              },
+            )
+          : null,
     );
   }
 
@@ -1545,42 +1531,64 @@ class _FocusableSeriesCardState extends State<_FocusableSeriesCard> {
     final series = widget.series;
 
     return FocusableActionDetector(
-      onFocusChange: (f) => setState(() => _isFocused = f),
+      onFocusChange: (f) {
+        setState(() => _isFocused = f);
+        if (f && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              Scrollable.ensureVisible(
+                context,
+                alignment: 0.35,
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutCubic,
+              );
+            }
+          });
+        }
+      },
       onShowHoverHighlight: (h) => setState(() => _isHovered = h),
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (_) => widget.onTap(),
         ),
       },
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+      },
       child: GestureDetector(
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
+          duration: const Duration(milliseconds: 130),
           curve: Curves.easeOutCubic,
           transform: Matrix4.diagonal3Values(
-            _isFocused ? 1.06 : (_isHovered ? 1.04 : 1.0),
-            _isFocused ? 1.06 : (_isHovered ? 1.04 : 1.0),
+            _isFocused ? 1.05 : (_isHovered ? 1.03 : 1.0),
+            _isFocused ? 1.05 : (_isHovered ? 1.03 : 1.0),
             1.0,
           ),
           decoration: BoxDecoration(
-            color: AppColors.surface,
+            color: _isFocused ? AppColors.tvFocusFill : AppColors.surface,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: _isFocused
-                  ? Colors.white
+                  ? AppColors.tvFocusBright
                   : (_isHovered
-                      ? AppColors.primary
+                      ? AppColors.tvFocus
                       : Colors.white.withValues(alpha: 0.08)),
-              width: _isFocused ? 2.5 : (_isHovered ? 2 : 1),
+              width: _isFocused ? 3.0 : (_isHovered ? 2.0 : 1.0),
             ),
             boxShadow: [
               BoxShadow(
                 color: _isFocused
-                    ? AppColors.primary.withValues(alpha: 0.5)
+                    ? AppColors.tvFocusGlow
                     : (_isHovered
-                        ? AppColors.primary.withValues(alpha: 0.3)
+                        ? AppColors.tvFocus.withValues(alpha: 0.3)
                         : Colors.black.withValues(alpha: 0.3)),
-                blurRadius: _isFocused ? 20 : (_isHovered ? 16 : 8),
+                blurRadius: _isFocused ? 22 : (_isHovered ? 14 : 8),
+                spreadRadius: _isFocused ? 1.5 : 0,
                 offset: Offset(0, _isActive ? 6 : 3),
               ),
             ],

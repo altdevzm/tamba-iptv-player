@@ -18,6 +18,7 @@ import '../../features/player/data/player_controller.dart';
 import '../../features/player/presentation/fullscreen_player_view.dart';
 import '../../shared/widgets/floating_mini_player_pill.dart';
 import '../../shared/widgets/platform_navigation_shell.dart';
+import '../../shared/widgets/tv_text_field.dart';
 import '../../features/movies/presentation/movie_detail_page.dart';
 import '../../features/series/presentation/series_detail_page.dart';
 import '../../features/content_details/domain/device_form_factor.dart';
@@ -214,13 +215,16 @@ class AppShell extends ConsumerWidget {
       onKeyEvent: (node, event) {
         if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-        // The text field's focus node may be attached to an internal Focus widget.
+        // Never hijack keys while any text input or on-screen keyboard is active
         final primary = FocusManager.instance.primaryFocus;
         final focusContext = primary?.context;
-        final isEditingText = focusContext != null &&
-            (focusContext.widget is EditableText ||
-                focusContext.findAncestorWidgetOfExactType<EditableText>() !=
-                    null);
+        final isEditingText = TvTextField.isAnyEditing ||
+            (focusContext != null &&
+                (focusContext.widget is EditableText ||
+                    focusContext.findAncestorWidgetOfExactType<EditableText>() !=
+                        null ||
+                    focusContext.findAncestorWidgetOfExactType<TextField>() !=
+                        null));
         if (isEditingText) {
           return KeyEventResult.ignored;
         }
@@ -233,8 +237,14 @@ class AppShell extends ConsumerWidget {
         }
 
         if (event.logicalKey == LogicalKeyboardKey.space) {
-          ref.read(playerControllerProvider.notifier).togglePlayPause();
-          return KeyEventResult.handled;
+          // Only toggle playback on space if a player item is active and no
+          // button/card is handling ActivateIntent via space.
+          final playerState = ref.read(playerControllerProvider);
+          if (playerState.currentItem != null && primary == node) {
+            ref.read(playerControllerProvider.notifier).togglePlayPause();
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
         }
 
         if (event.logicalKey == LogicalKeyboardKey.keyF) {
@@ -242,13 +252,16 @@ class AppShell extends ConsumerWidget {
           final playerState = ref.read(playerControllerProvider);
           if (playerState.isFullscreen) {
             ctrl.closePlayer();
+            return KeyEventResult.handled;
           } else if (playerState.currentItem != null) {
             ctrl.openFullscreen();
+            return KeyEventResult.handled;
           }
-          return KeyEventResult.handled;
+          return KeyEventResult.ignored;
         }
 
-        if (event.logicalKey == LogicalKeyboardKey.escape) {
+        if (event.logicalKey == LogicalKeyboardKey.escape ||
+            event.logicalKey == LogicalKeyboardKey.goBack) {
           final ctrl = ref.read(playerControllerProvider.notifier);
           final playerState = ref.read(playerControllerProvider);
           if (playerState.isFullscreen) {

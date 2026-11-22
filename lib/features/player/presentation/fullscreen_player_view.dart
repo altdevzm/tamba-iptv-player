@@ -249,13 +249,22 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
     switch (event.logicalKey) {
       case LogicalKeyboardKey.select:
       case LogicalKeyboardKey.enter:
+      case LogicalKeyboardKey.numpadEnter:
+      case LogicalKeyboardKey.gameButtonA:
         if (_showChannelDrawer) return KeyEventResult.ignored;
         if (!_showControls) {
           _onUserInteraction();
-        } else {
-          controller.togglePlayPause();
-          _onUserInteraction();
+          return KeyEventResult.handled;
         }
+        // When controls are visible, let the focused button/slider handle OK/ENTER
+        // so TV remote users can activate Back, Quality, Channels, Audio, etc.
+        final primary = FocusManager.instance.primaryFocus;
+        if (primary != null && primary != node) {
+          _onUserInteraction();
+          return KeyEventResult.ignored;
+        }
+        controller.togglePlayPause();
+        _onUserInteraction();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.space:
       case LogicalKeyboardKey.mediaPlayPause:
@@ -303,24 +312,39 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
           setState(() => _showChannelDrawer = false);
           return KeyEventResult.handled;
         }
+        if (_showDiagnostics) {
+          setState(() => _showDiagnostics = false);
+          return KeyEventResult.handled;
+        }
         controller.closePlayer();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowLeft:
-        final target = playerState.position - const Duration(seconds: 10);
-        controller.seek(target < Duration.zero ? Duration.zero : target);
-        _onUserInteraction();
-        return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowRight:
-        final target = playerState.position + const Duration(seconds: 10);
-        controller.seek(target);
-        _onUserInteraction();
-        return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowUp:
-        controller.setVolume((playerState.volume + 10).clamp(0.0, 100.0));
-        _onUserInteraction();
-        return KeyEventResult.handled;
       case LogicalKeyboardKey.arrowDown:
-        controller.setVolume((playerState.volume - 10).clamp(0.0, 100.0));
+        if (_showChannelDrawer) return KeyEventResult.ignored;
+        // When controls overlay is visible, let D-pad traverse the player buttons!
+        if (_showControls) {
+          _onUserInteraction();
+          return KeyEventResult.ignored;
+        }
+        // When controls are hidden: LEFT/RIGHT seek VOD, UP/DOWN reveal controls
+        if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+            playerState.currentItem?.type != MediaType.live) {
+          final target = playerState.position - const Duration(seconds: 10);
+          controller.seek(target < Duration.zero ? Duration.zero : target);
+          _showGestureHud(Icons.fast_rewind_rounded, '-10s');
+          _onUserInteraction();
+          return KeyEventResult.handled;
+        }
+        if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
+            playerState.currentItem?.type != MediaType.live) {
+          final target = playerState.position + const Duration(seconds: 10);
+          controller.seek(target);
+          _showGestureHud(Icons.fast_forward_rounded, '+10s');
+          _onUserInteraction();
+          return KeyEventResult.handled;
+        }
         _onUserInteraction();
         return KeyEventResult.handled;
       case LogicalKeyboardKey.keyM:
@@ -679,9 +703,11 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                       nextEpisode: playerState.nextEpisodeItem!),
 
                 // --- Auto-Hiding Controls Overlay ---
-                IgnorePointer(
-                  ignoring: !_showControls,
-                  child: AnimatedOpacity(
+                ExcludeFocus(
+                  excluding: !_showControls,
+                  child: IgnorePointer(
+                    ignoring: !_showControls,
+                    child: AnimatedOpacity(
                     opacity: _showControls ? 1.0 : 0.0,
                     duration: const Duration(milliseconds: 220),
                     child: Container(
@@ -1061,6 +1087,7 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                       ),
                     ),
                   ),
+                ),
                 ),
                 ),
               ],

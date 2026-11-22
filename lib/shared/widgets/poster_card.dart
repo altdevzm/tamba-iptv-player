@@ -33,7 +33,21 @@ class _PosterCardState extends State<PosterCard> {
   @override
   Widget build(BuildContext context) {
     return FocusableActionDetector(
-      onFocusChange: (focused) => setState(() => _isFocused = focused),
+      onFocusChange: (focused) {
+        setState(() => _isFocused = focused);
+        if (focused && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              Scrollable.ensureVisible(
+                context,
+                alignment: 0.35,
+                duration: const Duration(milliseconds: 140),
+                curve: Curves.easeOutCubic,
+              );
+            }
+          });
+        }
+      },
       actions: {
         ActivateIntent: CallbackAction<ActivateIntent>(
           onInvoke: (_) => widget.onTap(),
@@ -42,6 +56,8 @@ class _PosterCardState extends State<PosterCard> {
       shortcuts: {
         LogicalKeySet(LogicalKeyboardKey.select): const ActivateIntent(),
         LogicalKeySet(LogicalKeyboardKey.enter): const ActivateIntent(),
+        LogicalKeySet(LogicalKeyboardKey.numpadEnter): const ActivateIntent(),
+        LogicalKeySet(LogicalKeyboardKey.gameButtonA): const ActivateIntent(),
         LogicalKeySet(LogicalKeyboardKey.space): const ActivateIntent(),
       },
       child: MouseRegion(
@@ -50,34 +66,35 @@ class _PosterCardState extends State<PosterCard> {
         child: GestureDetector(
           onTap: widget.onTap,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
+            duration: const Duration(milliseconds: 140),
             curve: Curves.easeOutCubic,
             width: widget.width,
             height: widget.height,
             transform: Matrix4.diagonal3Values(
-              _isFocused ? 1.08 : (_isHovered ? 1.05 : 1.0),
-              _isFocused ? 1.08 : (_isHovered ? 1.05 : 1.0),
+              _isFocused ? 1.06 : (_isHovered ? 1.04 : 1.0),
+              _isFocused ? 1.06 : (_isHovered ? 1.04 : 1.0),
               1.0,
             ),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
                 color: _isFocused
-                    ? Colors.white
+                    ? AppColors.tvFocusBright
                     : (_isHovered
-                        ? AppColors.primary
+                        ? AppColors.tvFocus
                         : Colors.white.withValues(alpha: 0.08)),
-                width: _isFocused ? 2.5 : (_isHovered ? 2 : 1),
+                width: _isFocused ? 3.0 : (_isHovered ? 2.0 : 1.0),
               ),
               boxShadow: [
                 BoxShadow(
                   color: _isFocused
-                      ? AppColors.primary.withValues(alpha: 0.6)
+                      ? AppColors.tvFocusGlow
                       : (_isHovered
-                          ? AppColors.primary.withValues(alpha: 0.35)
+                          ? AppColors.tvFocus.withValues(alpha: 0.35)
                           : Colors.black.withValues(alpha: 0.3)),
-                  blurRadius: _isFocused ? 24 : (_isHovered ? 20 : 10),
-                  offset: Offset(0, _isActive ? 8 : 4),
+                  blurRadius: _isFocused ? 22 : (_isHovered ? 16 : 10),
+                  spreadRadius: _isFocused ? 2 : 0,
+                  offset: Offset(0, _isActive ? 6 : 4),
                 ),
               ],
             ),

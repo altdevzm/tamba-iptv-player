@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../shared/widgets/glass_container.dart';
 
@@ -102,12 +103,15 @@ class _PinPromptDialogState extends ConsumerState<PinPromptDialog> {
             const SizedBox(height: 24),
 
             // PIN Input Field
-            TextField(
+            TvTextField(
               controller: _pinController,
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.done,
               maxLength: 4,
               obscureText: true,
               textAlign: TextAlign.center,
+              labelText: '4-Digit PIN',
+              hintText: '••••',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 26,
@@ -123,18 +127,6 @@ class _PinPromptDialogState extends ConsumerState<PinPromptDialog> {
                 ),
                 filled: true,
                 fillColor: Colors.white.withValues(alpha: 0.06),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AppColors.primary),
-                ),
               ),
               onSubmitted: (_) => _submit(),
             ),

@@ -7,6 +7,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../shared/widgets/tv_focusable.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../../epg/presentation/epg_timeline_widget.dart';
 import '../../epg/presentation/reminders_dialog.dart';
 import '../../content_details/domain/device_form_factor.dart';
@@ -359,48 +361,23 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                      child: TextField(
+                      child: TvTextField(
                         controller: searchCtrl,
+                        hintText: 'Filter categories...',
+                        textInputAction: TextInputAction.search,
                         onChanged: (v) => setSheetState(() => query = v.trim()),
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 14),
-                        decoration: InputDecoration(
-                          hintText: 'Filter categories...',
-                          hintStyle: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.35),
-                              fontSize: 13.5),
-                          prefixIcon: const Icon(Icons.search_rounded,
-                              color: Colors.white54, size: 19),
-                          suffixIcon: query.isNotEmpty
-                              ? IconButton(
-                                  onPressed: () {
-                                    searchCtrl.clear();
-                                    setSheetState(() => query = '');
-                                  },
-                                  icon: const Icon(Icons.clear_rounded,
-                                      color: Colors.white54, size: 18),
-                                )
-                              : null,
-                          filled: true,
-                          fillColor: const Color(0xFF1E1E26),
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                                color: Colors.white.withValues(alpha: 0.08)),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(
-                                color: Colors.white.withValues(alpha: 0.08)),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide:
-                                const BorderSide(color: AppColors.primary),
-                          ),
-                        ),
+                        prefixIcon: const Icon(Icons.search_rounded,
+                            color: Colors.white54, size: 19),
+                        suffixIcon: query.isNotEmpty
+                            ? IconButton(
+                                onPressed: () {
+                                  searchCtrl.clear();
+                                  setSheetState(() => query = '');
+                                },
+                                icon: const Icon(Icons.clear_rounded,
+                                    color: Colors.white54, size: 18),
+                              )
+                            : null,
                       ),
                     ),
                     Expanded(
@@ -1224,35 +1201,24 @@ class _SearchBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 44,
-      child: TextField(
+      height: 46,
+      child: TvTextField(
         controller: controller,
+        hintText: 'Search channels…',
+        textInputAction: TextInputAction.search,
         onChanged: onChanged,
-        style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-        decoration: InputDecoration(
-          hintText: 'Search channels…',
-          hintStyle:
-              const TextStyle(color: AppColors.textSecondary, fontSize: 14),
-          prefixIcon: const Icon(Icons.search_rounded,
-              color: AppColors.textSecondary, size: 20),
-          suffixIcon: controller.text.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear_rounded,
-                      color: AppColors.textSecondary, size: 18),
-                  onPressed: () {
-                    controller.clear();
-                    onChanged('');
-                  },
-                )
-              : null,
-          filled: true,
-          fillColor: AppColors.surfaceElevated,
-          contentPadding: const EdgeInsets.symmetric(vertical: 0),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
-          ),
-        ),
+        prefixIcon: const Icon(Icons.search_rounded,
+            color: AppColors.textSecondary, size: 20),
+        suffixIcon: controller.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.clear_rounded,
+                    color: AppColors.textSecondary, size: 18),
+                onPressed: () {
+                  controller.clear();
+                  onChanged('');
+                },
+              )
+            : null,
       ),
     );
   }
@@ -1303,8 +1269,6 @@ class _ChannelCard extends ConsumerStatefulWidget {
 }
 
 class _ChannelCardState extends ConsumerState<_ChannelCard> {
-  bool _isHovered = false;
-  bool _isFocused = false;
   String? _nowPlayingTitle;
 
   @override
@@ -1354,43 +1318,21 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
   @override
   Widget build(BuildContext context) {
     final ch = widget.channel;
-    final isActive = _isHovered || _isFocused;
     final isMobile = MediaQuery.sizeOf(context).width < 768;
 
-    return FocusableActionDetector(
-      onFocusChange: (f) => setState(() => _isFocused = f),
-      onShowHoverHighlight: (h) => setState(() => _isHovered = h),
-      actions: {
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) => _openPreview(),
+    return TvFocusable(
+      borderRadius: 12,
+      scaleOnFocus: 1.02,
+      backgroundColor: AppColors.surface,
+      onPressed: isMobile ? _playChannel : _openPreview,
+      onLongPress: _openPreview,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: isMobile ? 12 : 16,
+          vertical: isMobile ? 10 : 12,
         ),
-      },
-      child: Material(
-        color: isActive ? AppColors.surfaceElevated : AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: isMobile ? _playChannel : _openPreview,
-          onLongPress: _openPreview,
-          splashColor: AppColors.primary.withValues(alpha: 0.16),
-          child: Container(
-            padding: EdgeInsets.symmetric(
-              horizontal: isMobile ? 12 : 16,
-              vertical: isMobile ? 10 : 12,
-            ),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: _isFocused
-                    ? Colors.white
-                    : (_isHovered
-                        ? AppColors.primary.withValues(alpha: 0.6)
-                        : Colors.white.withValues(alpha: 0.06)),
-                width: _isFocused ? 2 : 1,
-              ),
-            ),
-            child: Row(
-            children: [
+        child: Row(
+          children: [
               // Channel Logo
               _ChannelLogo(logoUrl: ch.posterUrl),
               SizedBox(width: isMobile ? 12 : 16),
@@ -1540,8 +1482,6 @@ class _ChannelCardState extends ConsumerState<_ChannelCard> {
             ],
           ),
         ),
-        ),
-      ),
     );
   }
 }

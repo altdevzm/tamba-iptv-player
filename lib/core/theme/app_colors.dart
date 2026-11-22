@@ -34,6 +34,12 @@ class AppColors {
   // Interactive States
   static const Color hoverHighlight = Color(0x1AFFFFFF);
   static const Color activeSelection = Color(0x2EFFFFFF);
-  static const Color focusRing = Color(0xFFE50914);
+
+  // Smart TV Focus System (Tamba Blue — distinct from Red Selected/Active states)
+  static const Color tvFocus = Color(0xFF2F80FF);
+  static const Color tvFocusBright = Color(0xFF60A5FA);
+  static const Color tvFocusFill = Color(0x332F80FF);
+  static const Color tvFocusGlow = Color(0x802F80FF);
+  static const Color focusRing = tvFocus;
 }
 

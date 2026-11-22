@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_colors.dart';
+import 'tv_focusable.dart';
 
 class PlatformNavigationSidebar extends StatefulWidget {
   final String currentRoute;
@@ -230,34 +231,31 @@ class _SearchField extends StatelessWidget {
   Widget build(BuildContext context) {
     final isActive = currentRoute.startsWith('/search');
 
-    return Material(
-      color: isActive
-          ? AppColors.primary.withValues(alpha: 0.18)
-          : Colors.white.withValues(alpha: 0.07),
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: () => context.go('/search'),
-        borderRadius: BorderRadius.circular(10),
-        child: SizedBox(
-          height: 42,
-          child: Row(
-            children: [
-              const SizedBox(width: 12),
-              Icon(
-                Icons.search_rounded,
-                size: 19,
-                color: isActive ? AppColors.primary : AppColors.textSecondary,
+    return TvFocusable(
+      isActive: isActive,
+      borderRadius: 10,
+      backgroundColor: Colors.white.withValues(alpha: 0.07),
+      onPressed: () => context.go('/search'),
+      child: SizedBox(
+        height: 42,
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            Icon(
+              Icons.search_rounded,
+              size: 19,
+              color: isActive ? AppColors.primary : Colors.white70,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              'Search all...',
+              style: TextStyle(
+                color: isActive ? Colors.white : AppColors.textSecondary,
+                fontSize: 13,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
               ),
-              const SizedBox(width: 10),
-              Text(
-                'Search all...',
-                style: TextStyle(
-                  color: isActive ? Colors.white : AppColors.textMuted,
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -327,7 +325,21 @@ class _DestinationState extends State<_Destination> {
       message: widget.compact ? widget.label : '',
       child: FocusableActionDetector(
         autofocus: widget.autofocus,
-        onFocusChange: (value) => setState(() => _focused = value),
+        onFocusChange: (value) {
+          setState(() => _focused = value);
+          if (value && mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                Scrollable.ensureVisible(
+                  context,
+                  alignment: 0.35,
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeOutCubic,
+                );
+              }
+            });
+          }
+        },
         onShowHoverHighlight: (value) => setState(() => _hovered = value),
         actions: {
           ActivateIntent: CallbackAction<ActivateIntent>(
@@ -340,6 +352,8 @@ class _DestinationState extends State<_Destination> {
         shortcuts: const {
           SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+          SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
           SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
         },
         child: Material(
@@ -348,34 +362,62 @@ class _DestinationState extends State<_Destination> {
             onTap: _navigate,
             borderRadius: BorderRadius.circular(10),
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOutCubic,
               height: 46,
               margin: const EdgeInsets.symmetric(vertical: 2),
               padding:
                   EdgeInsets.symmetric(horizontal: widget.compact ? 0 : 12),
               decoration: BoxDecoration(
-                color: _active
-                    ? Colors.white.withValues(alpha: 0.12)
-                    : _focused
-                        ? AppColors.primary.withValues(alpha: 0.22)
+                // Clear distinction: Focused = Tamba Blue, Active = Neutral + Red bar
+                color: _focused
+                    ? AppColors.tvFocusFill
+                    : _active
+                        ? Colors.white.withValues(alpha: 0.12)
                         : _hovered
                             ? Colors.white.withValues(alpha: 0.06)
                             : Colors.transparent,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: _focused ? AppColors.primary : Colors.transparent,
-                  width: 1.5,
+                  color: _focused
+                      ? AppColors.tvFocusBright
+                      : (_active
+                          ? Colors.white.withValues(alpha: 0.18)
+                          : Colors.transparent),
+                  width: _focused ? 2.5 : 1.0,
                 ),
+                boxShadow: _focused
+                    ? const [
+                        BoxShadow(
+                          color: AppColors.tvFocusGlow,
+                          blurRadius: 14,
+                          spreadRadius: 0.5,
+                        ),
+                      ]
+                    : null,
               ),
               child: Row(
                 mainAxisAlignment: widget.compact
                     ? MainAxisAlignment.center
                     : MainAxisAlignment.start,
                 children: [
+                  if (_active && !widget.compact) ...[
+                    Container(
+                      width: 3.5,
+                      height: 20,
+                      margin: const EdgeInsets.only(right: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ],
                   Icon(
                     widget.icon,
                     size: 20,
-                    color: highlighted ? Colors.white : AppColors.textSecondary,
+                    color: _focused
+                        ? Colors.white
+                        : (_active ? AppColors.primary : AppColors.textSecondary),
                   ),
                   if (!widget.compact) ...[
                     const SizedBox(width: 12),
@@ -388,9 +430,10 @@ class _DestinationState extends State<_Destination> {
                           color: highlighted
                               ? Colors.white
                               : AppColors.textSecondary,
-                          fontSize: 13,
-                          fontWeight:
-                              highlighted ? FontWeight.w600 : FontWeight.w500,
+                          fontSize: 13.5,
+                          fontWeight: _focused
+                              ? FontWeight.w700
+                              : (_active ? FontWeight.w600 : FontWeight.w500),
                         ),
                       ),
                     ),

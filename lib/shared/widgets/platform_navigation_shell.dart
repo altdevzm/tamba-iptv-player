@@ -35,20 +35,26 @@ class PlatformNavigationShell extends StatelessWidget {
             backgroundColor: AppColors.background,
             body: Row(
               children: [
-                PlatformNavigationSidebar(
-                  currentRoute: currentRoute,
-                  isTv: isTv,
-                  compact: compactSidebar,
+                FocusTraversalGroup(
+                  policy: ReadingOrderTraversalPolicy(),
+                  child: PlatformNavigationSidebar(
+                    currentRoute: currentRoute,
+                    isTv: isTv,
+                    compact: compactSidebar,
+                  ),
                 ),
                 Expanded(
-                  child: Column(
-                    children: [
-                      if (isDesktop)
-                        TopHeaderBar(
-                          onProfileTap: () => context.go('/settings'),
-                        ),
-                      Expanded(child: child),
-                    ],
+                  child: FocusTraversalGroup(
+                    policy: ReadingOrderTraversalPolicy(),
+                    child: Column(
+                      children: [
+                        if (isDesktop)
+                          TopHeaderBar(
+                            onProfileTap: () => context.go('/settings'),
+                          ),
+                        Expanded(child: child),
+                      ],
+                    ),
                   ),
                 ),
               ],

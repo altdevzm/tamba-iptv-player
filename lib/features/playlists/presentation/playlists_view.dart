@@ -10,6 +10,7 @@ import '../../../core/persistence/database_provider.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/utils/playlist_file_utils.dart';
 import '../../../shared/widgets/glass_container.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../data/playlist_repository_impl.dart';
 import 'playlist_notifier.dart';
 import '../../xtream/presentation/xtream_notifier.dart';
@@ -1062,45 +1063,19 @@ class _AddPlaylistDialogState extends ConsumerState<AddPlaylistDialog> {
     TextInputType? keyboardType,
     Widget? suffixIcon,
   }) {
-    return TextField(
+    return TvTextField(
       controller: controller,
+      labelText: label,
+      hintText: hint,
+      prefixIcon: icon != null
+          ? Icon(icon, color: Colors.white.withValues(alpha: 0.5), size: 19)
+          : null,
+      suffixIcon: suffixIcon,
       obscureText: obscureText,
       keyboardType: keyboardType,
       autocorrect: false,
       enabled: !_isLoading,
-      style: const TextStyle(color: Colors.white, fontSize: 14),
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: TextStyle(
-          color: Colors.white.withValues(alpha: 0.6),
-          fontSize: 12.5,
-        ),
-        hintText: hint,
-        hintStyle: TextStyle(
-          color: Colors.white.withValues(alpha: 0.25),
-          fontSize: 13.5,
-        ),
-        prefixIcon: icon != null
-            ? Icon(icon, color: Colors.white.withValues(alpha: 0.5), size: 19)
-            : null,
-        suffixIcon: suffixIcon,
-        filled: true,
-        fillColor: const Color(0xFF1E1E25),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.09)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.09)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.primary, width: 1.4),
-        ),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      ),
+      borderRadius: 12,
     );
   }
 

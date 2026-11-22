@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../content_details/presentation/adaptive_details_coordinator.dart';
@@ -503,44 +504,27 @@ class _GlobalSearchViewState extends ConsumerState<GlobalSearchView> {
   Widget _buildSearchInput({required double width}) {
     return SizedBox(
       width: width,
-      height: 44,
-      child: TextField(
+      height: 46,
+      child: TvTextField(
         controller: _controller,
         autofocus: false,
-        style: const TextStyle(color: Colors.white, fontSize: 14),
+        hintText: 'Type title, channel, genre, or keyword...',
+        textInputAction: TextInputAction.search,
+        borderRadius: 22,
         onChanged: _onSearchChanged,
         onSubmitted: _submitSearch,
-        decoration: InputDecoration(
-          hintText: 'Type title, channel, genre, or keyword...',
-          hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
-          prefixIcon:
-              const Icon(Icons.search_rounded, color: Colors.white60, size: 20),
-          suffixIcon: _controller.text.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear_rounded,
-                      color: Colors.white54, size: 18),
-                  onPressed: () {
-                    _controller.clear();
-                    _onSearchChanged('');
-                  },
-                )
-              : null,
-          filled: true,
-          fillColor: Colors.white.withValues(alpha: 0.06),
-          contentPadding: const EdgeInsets.symmetric(vertical: 0),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(22),
-            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(22),
-            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(22),
-            borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-          ),
-        ),
+        prefixIcon:
+            const Icon(Icons.search_rounded, color: Colors.white60, size: 20),
+        suffixIcon: _controller.text.isNotEmpty
+            ? IconButton(
+                icon: const Icon(Icons.clear_rounded,
+                    color: Colors.white54, size: 18),
+                onPressed: () {
+                  _controller.clear();
+                  _onSearchChanged('');
+                },
+              )
+            : null,
       ),
     );
   }

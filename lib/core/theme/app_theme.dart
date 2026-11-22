@@ -57,6 +57,97 @@ class AppTheme {
         color: AppColors.textSecondary,
         size: 20,
       ),
+      focusColor: AppColors.tvFocusFill,
+      hoverColor: AppColors.hoverHighlight,
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ButtonStyle(
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return AppColors.tvFocusFill;
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return const BorderSide(color: AppColors.tvFocusBright, width: 2.5);
+            }
+            return BorderSide.none;
+          }),
+          elevation: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) return 8;
+            return null;
+          }),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return AppColors.tvFocusFill;
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return const BorderSide(color: AppColors.tvFocusBright, width: 2.5);
+            }
+            return null;
+          }),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return AppColors.tvFocusFill;
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return const BorderSide(color: AppColors.tvFocus, width: 2);
+            }
+            return BorderSide.none;
+          }),
+        ),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: ButtonStyle(
+          backgroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return AppColors.tvFocusFill;
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return const BorderSide(color: AppColors.tvFocusBright, width: 2);
+            }
+            return BorderSide.none;
+          }),
+        ),
+      ),
+      listTileTheme: ListTileThemeData(
+        selectedTileColor: AppColors.primary.withValues(alpha: 0.16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      chipTheme: ChipThemeData(
+        side: WidgetStateBorderSide.resolveWith((states) {
+          if (states.contains(WidgetState.focused)) {
+            return const BorderSide(color: AppColors.tvFocusBright, width: 2.5);
+          }
+          if (states.contains(WidgetState.selected)) {
+            return const BorderSide(color: AppColors.primary, width: 1.2);
+          }
+          return BorderSide(color: Colors.white.withValues(alpha: 0.14));
+        }),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.tvFocusBright, width: 2.5),
+        ),
+      ),
       scrollbarTheme: ScrollbarThemeData(
         thumbColor: WidgetStateProperty.all(Colors.white.withValues(alpha: 0.18)),
         radius: const Radius.circular(8),

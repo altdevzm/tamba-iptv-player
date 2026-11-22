@@ -11,6 +11,8 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/persistence/database_provider.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../shared/widgets/glass_container.dart';
+import '../../../shared/widgets/tv_focusable.dart';
+import '../../../shared/widgets/tv_text_field.dart';
 import '../../content_details/domain/device_form_factor.dart';
 import '../../epg/presentation/epg_notifier.dart';
 import '../../player/data/libvlc_bridge.dart';
@@ -767,7 +769,7 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
                 children: [
                   _buildInfoRow('Application', 'Tamba IPTV'),
                   _buildDivider(),
-                  _buildInfoRow('Version', '1.0.11'),
+                  _buildInfoRow('Version', '1.0.12'),
                   _buildDivider(),
                   _buildInfoRow('Built With', 'Flutter + Dart'),
                   _buildDivider(),
@@ -1117,113 +1119,101 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
     String label,
     String hint,
   ) {
-    return TextField(
+    final isUrl = label.toLowerCase().contains('url') ||
+        label.toLowerCase().contains('referer');
+    return TvTextField(
       controller: controller,
+      labelText: label,
+      hintText: hint,
+      keyboardType: isUrl ? TextInputType.url : TextInputType.text,
+      borderRadius: 10,
       style: const TextStyle(color: Colors.white, fontSize: 13.5),
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle:
-            TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12),
-        hintText: hint,
-        hintStyle: TextStyle(
-            color: Colors.white.withValues(alpha: 0.25), fontSize: 13),
-        filled: true,
-        fillColor: Colors.white.withValues(alpha: 0.06),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.12)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: AppColors.primary),
-        ),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      ),
     );
   }
 
   Widget _buildSwitchRow(
       String title, String subtitle, bool value, ValueChanged<bool> onChanged) {
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                subtitle,
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
-              ),
-            ],
+    return TvFocusable(
+      borderRadius: 10,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      onPressed: () => onChanged(!value),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 12),
+                ),
+              ],
+            ),
           ),
-        ),
-        Switch(
-          value: value,
-          onChanged: onChanged,
-          activeThumbColor: AppColors.primary,
-        ),
-      ],
+          ExcludeFocus(
+            child: Switch(
+              value: value,
+              onChanged: onChanged,
+              activeThumbColor: AppColors.primary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildActionRow(
       String title, String subtitle, IconData icon, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(icon, color: Colors.white70, size: 18),
+    return TvFocusable(
+      borderRadius: 10,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      onPressed: onTap,
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.5),
-                        fontSize: 12),
-                  ),
-                ],
-              ),
+            child: Icon(icon, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 12),
+                ),
+              ],
             ),
-            Icon(Icons.arrow_forward_ios_rounded,
-                color: Colors.white.withValues(alpha: 0.3), size: 14),
-          ],
-        ),
+          ),
+          Icon(Icons.arrow_forward_ios_rounded,
+              color: Colors.white.withValues(alpha: 0.45), size: 14),
+        ],
       ),
     );
   }
