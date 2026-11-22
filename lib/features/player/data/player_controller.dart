@@ -13,6 +13,9 @@ import '../../../core/persistence/database_provider.dart';
 import '../../../core/security/secure_storage_service.dart';
 import '../../stalker/data/stalker_client.dart';
 import '../domain/playback_enums.dart';
+import '../streaming/stream_validator.dart';
+import '../streaming/streaming_manager.dart';
+import '../streaming/streaming_models.dart';
 import 'libvlc_bridge.dart';
 
 // ─── Rich Player State ────────────────────────────────────────────────────────
@@ -153,7 +156,13 @@ class PlayerController extends StateNotifier<PlayerState>
   final AppDatabase _db;
   final SecureStorageService _storage;
   final StalkerClient? _stalkerClient;
+  final StreamingManager streamingManager;
   final Map<String, StalkerCredentials> _stalkerCredsCache = {};
+
+  // Cached HTTP headers & live channel list for fast (<2s) channel switching
+  Map<String, String>? _cachedHeaders;
+  String? _cachedLivePlaylistId;
+  List<ContentItemsTableData> _cachedLiveChannels = const [];
 
   bool get _usingLibVlc =>
       state.playbackEngine == PlaybackEngine.libVlc && LibVlcBridge.isSupported;
@@ -163,10 +172,12 @@ class PlayerController extends StateNotifier<PlayerState>
   Timer? _stallDetectionTimer;
   late final Future<void> _preferencesLoaded;
   int _reconnectAttempt = 0;
-  static const int _maxReconnectAttempts = 5;
-  static const int _maxStalledIntervals = 3;
+  bool _isRecovering = false;
+  bool _hasRenderedFirstFrame = false;
+  DateTime? _bufferingSince;
+  static const int _maxReconnectAttempts = StreamingManager.maxRecoveryAttempts;
   Duration? _lastObservedPosition;
-  int _stalledIntervals = 0;
+  int _stalledSeconds = 0;
 
   // Prevent race conditions when switching streams rapidly
   String? _currentOpenUrl;
@@ -174,6 +185,7 @@ class PlayerController extends StateNotifier<PlayerState>
 
   PlayerController(this._db, this._storage, {Dio? dio})
       : _stalkerClient = dio != null ? StalkerClient(dio) : null,
+        streamingManager = StreamingManager(dio: dio),
         player = Player(
           configuration: const PlayerConfiguration(
             bufferSize: 64 * 1024 * 1024, // 64 MB default
@@ -244,6 +256,18 @@ class PlayerController extends StateNotifier<PlayerState>
         state = state.copyWith(isPlaying: false);
         return;
       }
+      if (playing) {
+        if (!_hasRenderedFirstFrame) {
+          _hasRenderedFirstFrame = true;
+          streamingManager.analytics.recordFirstFrame();
+        }
+        if (_isRecovering || _reconnectAttempt > 0) {
+          _isRecovering = false;
+          _reconnectAttempt = 0;
+          streamingManager.analytics.recordRecoverySuccess();
+        }
+        _bufferingSince = null;
+      }
       state = state.copyWith(
         isPlaying: playing,
         playbackState: playing ? PlaybackState.playing : PlaybackState.paused,
@@ -251,19 +275,28 @@ class PlayerController extends StateNotifier<PlayerState>
     }));
 
     _subscriptions.add(player.stream.buffering.listen((buffering) {
+      if (_usingLibVlc) return;
+      streamingManager.analytics.recordBufferingChanged(
+        buffering,
+        hasStarted: _hasRenderedFirstFrame,
+      );
       if (buffering) {
+        _bufferingSince ??= DateTime.now();
         state = state.copyWith(
           isBuffering: true,
           playbackState: PlaybackState.buffering,
         );
-      } else if (state.playbackState == PlaybackState.buffering) {
-        state = state.copyWith(
-          isBuffering: false,
-          playbackState:
-              state.isPlaying ? PlaybackState.playing : PlaybackState.paused,
-        );
       } else {
-        state = state.copyWith(isBuffering: buffering);
+        _bufferingSince = null;
+        if (state.playbackState == PlaybackState.buffering) {
+          state = state.copyWith(
+            isBuffering: false,
+            playbackState:
+                state.isPlaying ? PlaybackState.playing : PlaybackState.paused,
+          );
+        } else {
+          state = state.copyWith(isBuffering: false);
+        }
       }
     }));
 
@@ -306,18 +339,32 @@ class PlayerController extends StateNotifier<PlayerState>
 
     _subscriptions.add(player.stream.error.listen((err) {
       if (err.isEmpty) return;
-      // ignore: avoid_print
-      print('[FilmuPlus Player] Error: $err');
-      _cancelReconnectTimer();
+      final failureKind = StreamValidator.classifyPlayerError(err);
+      streamingManager.analytics.recordFailure(failureKind);
+      // Never log raw URLs or credentials
+      debugPrint('[Tamba Player] Error (${failureKind.name}): ${_friendlyError(err)}');
 
       final item = state.currentItem;
-      if (item?.type == MediaType.live &&
+      final isRecoverable = failureKind == StreamFailureKind.networkError ||
+          (item?.type == MediaType.live &&
+              failureKind == StreamFailureKind.streamUnavailable);
+
+      if (isRecoverable &&
+          !_isRecovering &&
           _reconnectAttempt < _maxReconnectAttempts) {
-        _scheduleReconnect();
-      } else {
+        _scheduleReconnect(reason: failureKind.name);
+      } else if (!_isRecovering) {
+        final targetState = switch (failureKind) {
+          StreamFailureKind.unsupportedFormat =>
+            PlaybackState.unsupportedFormat,
+          StreamFailureKind.streamUnavailable ||
+          StreamFailureKind.expiredOrUnauthorized =>
+            PlaybackState.streamUnavailable,
+          _ => PlaybackState.failed,
+        };
         state = state.copyWith(
           isBuffering: false,
-          playbackState: PlaybackState.failed,
+          playbackState: targetState,
           errorMessage: _friendlyError(err),
         );
       }
@@ -416,87 +463,138 @@ class PlayerController extends StateNotifier<PlayerState>
     }
   }
 
-  // ─── Reconnection ─────────────────────────────────────────────────────────
+  // ─── Reconnection & Stall / Infinite-Buffer Guard ─────────────────────────
 
   void _startStallDetection() {
-    _stallDetectionTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+    _stallDetectionTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      final item = state.currentItem;
+      if (item == null || _isRecovering) return;
+
+      final cfg =
+          streamingManager.resolveBufferConfig(isLive: item.type == MediaType.live);
+
+      // 1. Guard against infinite buffering / connecting spinner
+      if ((state.isBuffering ||
+              state.playbackState == PlaybackState.connecting ||
+              state.playbackState == PlaybackState.loading) &&
+          _bufferingSince != null) {
+        final stuckSecs =
+            DateTime.now().difference(_bufferingSince!).inSeconds;
+        if (stuckSecs >= cfg.bufferingTimeoutSecs) {
+          _bufferingSince = null;
+          _scheduleReconnect(reason: 'buffering_timeout');
+          return;
+        }
+      }
+
+      // 2. Guard against frozen playback (position not advancing while playing)
       final currentPosition = state.position;
-      if (state.currentItem?.type != MediaType.live ||
-          state.playbackState != PlaybackState.playing ||
-          state.isBuffering) {
+      if (state.playbackState != PlaybackState.playing || state.isBuffering) {
         _lastObservedPosition = currentPosition;
-        _stalledIntervals = 0;
+        _stalledSeconds = 0;
         return;
       }
 
       if (_lastObservedPosition == null ||
           currentPosition != _lastObservedPosition) {
         _lastObservedPosition = currentPosition;
-        _stalledIntervals = 0;
+        _stalledSeconds = 0;
         return;
       }
 
-      _stalledIntervals++;
-      if (_stalledIntervals >= _maxStalledIntervals) {
-        _stalledIntervals = 0;
-        _scheduleReconnect();
+      _stalledSeconds += 3;
+      if (_stalledSeconds >= cfg.stallTimeoutSecs) {
+        _stalledSeconds = 0;
+        _scheduleReconnect(reason: 'playback_stalled');
       }
     });
   }
 
-  void _scheduleReconnect() {
+  void _scheduleReconnect({String reason = 'stream_error'}) {
+    // Never repeatedly restart a player that is already recovering
+    if (_isRecovering) return;
+
     if (_reconnectAttempt >= _maxReconnectAttempts) {
+      _isRecovering = false;
+      streamingManager.analytics.recordFailure(StreamFailureKind.streamUnavailable);
       state = state.copyWith(
-        playbackState: PlaybackState.failed,
+        isBuffering: false,
+        playbackState: PlaybackState.streamUnavailable,
         errorMessage:
-            'Stream unavailable after $_maxReconnectAttempts reconnect attempts.',
+            'Stream unavailable after $_maxReconnectAttempts recovery attempts. Tap Retry or try another source.',
       );
       _reconnectAttempt = 0;
       return;
     }
 
-    final delaySeconds = [2, 4, 8, 16, 30][_reconnectAttempt.clamp(0, 4)];
+    _isRecovering = true;
+    final delaySeconds =
+        streamingManager.backoffDelayForAttempt(_reconnectAttempt);
     _reconnectAttempt++;
+    streamingManager.analytics.recordRecoveryAttempt(_reconnectAttempt, reason);
 
     state = state.copyWith(
       playbackState: PlaybackState.reconnecting,
       reconnectAttempt: _reconnectAttempt,
+      isBuffering: true,
       clearError: true,
     );
 
+    _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(seconds: delaySeconds), () async {
       final item = state.currentItem;
-      if (item == null || item.streamUrl == null) return;
-      if (state.playbackState != PlaybackState.reconnecting) return;
+      if (item == null || item.streamUrl == null) {
+        _isRecovering = false;
+        return;
+      }
+      if (state.playbackState != PlaybackState.reconnecting) {
+        _isRecovering = false;
+        return;
+      }
 
       try {
         final headers = await _getHttpHeaders();
-        // On odd reconnect attempts, try alternating between HLS (.m3u8) and MPEG-TS (.ts)
-        // in case the IPTV server does not serve this channel in the default container.
-        final baseUrl = _playbackUrlFor(item);
+        // Force fresh Stalker session link on reconnect if needed
+        if (item.playlistId != null) {
+          _stalkerCredsCache.remove(item.playlistId);
+        }
+        final baseUrl = await _resolvePlaybackUrl(item);
         String urlToTry = baseUrl;
-        if (_reconnectAttempt.isOdd) {
+        // On odd live reconnect attempts, alternate between HLS (.m3u8) and TS (.ts)
+        if (item.type == MediaType.live && _reconnectAttempt.isOdd) {
           if (baseUrl.toLowerCase().endsWith('.ts')) {
             urlToTry = _playbackUrlFor(item, format: LiveStreamFormat.hls);
           } else if (baseUrl.toLowerCase().endsWith('.m3u8')) {
             urlToTry = _playbackUrlFor(item, format: LiveStreamFormat.ts);
           }
         }
+
+        // For VOD/series, resume at last known position; for Live TV, jump to live edge
+        final resumeAt = item.type == MediaType.live
+            ? Duration.zero
+            : state.position;
+
+        _bufferingSince = DateTime.now();
         if (_usingLibVlc) {
           await libVlcBridge.open(
             url: urlToTry,
             headers: headers,
+            start: resumeAt,
           );
         } else {
           await player.open(
-            Media(urlToTry, httpHeaders: headers),
+            Media(
+              urlToTry,
+              httpHeaders: headers,
+              start: resumeAt > Duration.zero ? resumeAt : null,
+            ),
             play: true,
           );
         }
-        // Reset reconnect counter on successful open
-        _reconnectAttempt = 0;
+        _isRecovering = false;
       } catch (_) {
-        _scheduleReconnect();
+        _isRecovering = false;
+        _scheduleReconnect(reason: 'reconnect_failed');
       }
     });
   }
@@ -504,6 +602,7 @@ class PlayerController extends StateNotifier<PlayerState>
   void _cancelReconnectTimer() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _isRecovering = false;
   }
 
   Future<void> _setMpvProperty(String property, String value) async {
@@ -583,40 +682,66 @@ class PlayerController extends StateNotifier<PlayerState>
     }
   }
 
-  // ─── Performance Profiles ────────────────────────────────────────────────
+  // ─── Performance & Buffer Profiles ───────────────────────────────────────
+
+  BufferProfile get bufferProfile => streamingManager.profile;
+  List<StreamRendition> get availableRenditions =>
+      streamingManager.availableRenditions;
+  StreamRendition get selectedRendition => streamingManager.selectedRendition;
+
+  Future<void> setBufferProfile(BufferProfile profile) async {
+    streamingManager.setBufferProfile(profile);
+    await setPlaybackProfile(profile.toLegacyProfile());
+  }
+
+  Future<void> selectQuality(StreamRendition rendition) async {
+    final variantUrl = streamingManager.selectManualQuality(rendition);
+    if (!_usingLibVlc) {
+      if (rendition.isAuto) {
+        await _setMpvProperty('hls-bitrate', 'max');
+      } else if (rendition.bandwidthBps > 0) {
+        await _setMpvProperty('hls-bitrate', rendition.bandwidthBps.toString());
+      }
+    }
+    // If a specific HLS variant URI was chosen, switch seamlessly
+    final item = state.currentItem;
+    if (item != null && variantUrl != null && variantUrl.isNotEmpty) {
+      final resumeAt = item.type == MediaType.live ? Duration.zero : state.position;
+      final headers = await _getHttpHeaders();
+      if (_usingLibVlc) {
+        await libVlcBridge.open(url: variantUrl, headers: headers, start: resumeAt);
+      } else {
+        await player.open(
+          Media(
+            variantUrl,
+            httpHeaders: headers,
+            start: resumeAt > Duration.zero ? resumeAt : null,
+          ),
+          play: true,
+        );
+      }
+    }
+    state = state.copyWith();
+  }
 
   Future<void> applyProfile(PlaybackProfile profile) async {
+    final mapped = BufferProfileLabel.fromLegacyProfile(profile);
+    streamingManager.setBufferProfile(mapped);
     state = state.copyWith(playbackProfile: profile);
+
     // On Android, let media_kit's VideoController manage hwdec/vo (e.g. S/W
     // rendering on emulators where MediaCodec discards frames).
     final isAndroid =
         !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    final isLive = state.currentItem?.type == MediaType.live;
+    final props = streamingManager.buildMpvProperties(
+      isLive: isLive,
+      isAndroid: isAndroid,
+    );
+
     try {
-      switch (profile) {
-        case PlaybackProfile.auto:
-          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
-          await _setMpvProperty('cache', 'yes');
-          await _setMpvProperty('cache-secs', '30');
-          await _setMpvProperty('demuxer-max-bytes', '67108864'); // 64 MiB
-          break;
-        case PlaybackProfile.dataSaver:
-          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
-          await _setMpvProperty('cache', 'yes');
-          await _setMpvProperty('cache-secs', '15');
-          await _setMpvProperty('demuxer-max-bytes', '33554432'); // 32 MiB
-          break;
-        case PlaybackProfile.moreStable:
-          if (!isAndroid) await _setMpvProperty('hwdec', 'auto-safe');
-          await _setMpvProperty('cache', 'yes');
-          await _setMpvProperty('cache-secs', '90');
-          await _setMpvProperty('demuxer-max-bytes', '134217728'); // 128 MiB
-          break;
-        case PlaybackProfile.highQuality:
-          if (!isAndroid) await _setMpvProperty('hwdec', 'auto');
-          await _setMpvProperty('cache', 'yes');
-          await _setMpvProperty('cache-secs', '60');
-          await _setMpvProperty('demuxer-max-bytes', '134217728'); // 128 MiB
-          break;
+      for (final entry in props.entries) {
+        await _setMpvProperty(entry.key, entry.value);
       }
     } catch (_) {
       // setProperty may throw if player is not initialized yet — non-fatal
@@ -627,42 +752,86 @@ class PlayerController extends StateNotifier<PlayerState>
 
   Future<Map<String, String>> getDiagnostics() async {
     final results = <String, String>{};
+    int? droppedFrames;
+    int? throughputKbps;
+
     try {
-      final hwdecCurrent = await _getMpvProperty('hwdec-current');
-      final decoder = hwdecCurrent.isNotEmpty ? hwdecCurrent : 'software';
-      results['decoder'] = decoder;
-      results['hardware_accelerated'] =
-          (decoder != 'no' && decoder != 'software' && decoder.isNotEmpty)
-              .toString();
+      if (_usingLibVlc) {
+        results['decoder'] = 'LibVLC (Android MediaCodec / S/W)';
+        results['hardware_accelerated'] = 'true';
+      } else {
+        final hwdecCurrent = await _getMpvProperty('hwdec-current');
+        final decoder = hwdecCurrent.isNotEmpty ? hwdecCurrent : 'software';
+        results['decoder'] = decoder;
+        results['hardware_accelerated'] =
+            (decoder != 'no' && decoder != 'software' && decoder.isNotEmpty)
+                .toString();
 
-      final vw = player.state.width ?? 0;
-      final vh = player.state.height ?? 0;
-      results['resolution'] = vw > 0 ? '${vw}x$vh' : 'unknown';
+        final vw = player.state.width ?? 0;
+        final vh = player.state.height ?? 0;
+        results['resolution'] = vw > 0 ? '${vw}x$vh' : 'unknown';
 
-      final audioParams = player.state.audioParams;
-      results['audio_format'] = audioParams.format ?? 'unknown';
+        final audioParams = player.state.audioParams;
+        results['audio_format'] = audioParams.format ?? 'unknown';
 
-      final fpsStr = await _getMpvProperty('estimated-vf-fps');
-      final fps = double.tryParse(fpsStr) ?? 0.0;
-      results['fps'] = fps > 0 ? '${fps.toStringAsFixed(1)} fps' : 'unknown';
+        final fpsStr = await _getMpvProperty('estimated-vf-fps');
+        final fps = double.tryParse(fpsStr) ?? 0.0;
+        results['fps'] = fps > 0 ? '${fps.toStringAsFixed(1)} fps' : 'unknown';
 
-      final vCodec = await _getMpvProperty('video-codec');
-      if (vCodec.isNotEmpty) results['video_codec'] = vCodec;
+        final vCodec = await _getMpvProperty('video-codec');
+        if (vCodec.isNotEmpty) results['video_codec'] = vCodec;
 
-      final aCodec = await _getMpvProperty('audio-codec-name');
-      if (aCodec.isNotEmpty) results['audio_codec'] = aCodec;
+        final aCodec = await _getMpvProperty('audio-codec-name');
+        if (aCodec.isNotEmpty) results['audio_codec'] = aCodec;
 
-      final bitrateStr = await _getMpvProperty('video-bitrate');
-      final bitrate = int.tryParse(bitrateStr) ?? 0;
-      if (bitrate > 0) {
-        results['bitrate'] = '${(bitrate / 1000).toStringAsFixed(0)} kbps';
+        final bitrateStr = await _getMpvProperty('video-bitrate');
+        final bitrate = int.tryParse(bitrateStr) ?? 0;
+        if (bitrate > 0) {
+          results['bitrate'] = '${(bitrate / 1000).toStringAsFixed(0)} kbps';
+        }
+
+        final dropStr = await _getMpvProperty('frame-drop-count');
+        droppedFrames = int.tryParse(dropStr) ?? 0;
+
+        final cacheSpeedStr = await _getMpvProperty('cache-speed');
+        final cacheSpeedBytesPerSec = double.tryParse(cacheSpeedStr) ?? 0;
+        if (cacheSpeedBytesPerSec > 0) {
+          throughputKbps = ((cacheSpeedBytesPerSec * 8) / 1000).round();
+        }
       }
     } catch (_) {}
 
+    streamingManager.analytics.updateRuntimeMetrics(
+      droppedFrames: droppedFrames,
+      throughputKbps: throughputKbps,
+    );
+    final snap = streamingManager.analytics.snapshot();
+
     results['buffer_seconds'] = state.bufferDuration.inSeconds.toString();
-    results['playback_state'] = state.playbackState.name;
+    results['playback_state'] = state.playbackState.displayLabel;
     results['reconnect_attempts'] = state.reconnectAttempt.toString();
-    results['profile'] = state.playbackProfile.name;
+    results['profile'] = streamingManager.profile.label;
+    results['ttff'] =
+        snap.lastStartupMs != null ? '${snap.lastStartupMs} ms' : 'measuring...';
+    results['avg_startup'] = snap.averageStartupMs != null
+        ? '${snap.averageStartupMs} ms'
+        : 'n/a';
+    if (snap.lastChannelSwitchMs != null) {
+      results['channel_switch'] = '${snap.lastChannelSwitchMs} ms';
+    }
+    results['rebuffer_count'] = snap.rebufferCount.toString();
+    results['buffering_total'] =
+        '${(snap.totalBufferingMs / 1000).toStringAsFixed(1)}s';
+    results['dropped_frames'] = snap.droppedFrames.toString();
+    if (snap.estimatedThroughputKbps != null) {
+      results['throughput'] = '${snap.estimatedThroughputKbps} kbps';
+    }
+    results['quality'] = snap.selectedQualityLabel;
+    results['recovery_rate'] =
+        '${(snap.recoverySuccessRate * 100).round()}% (${snap.recoverySuccesses}/${snap.recoveryAttempts})';
+    if (snap.rootCauseHint != null) {
+      results['root_cause'] = snap.rootCauseHint!;
+    }
     return results;
   }
 
@@ -851,109 +1020,178 @@ class PlayerController extends StateNotifier<PlayerState>
 
   // ─── Core Playback ───────────────────────────────────────────────────────
 
-  Future<void> playItem(MediaItem item, {bool startFullscreen = false}) async {
+  Future<void> playItem(
+    MediaItem item, {
+    bool startFullscreen = false,
+    bool isChannelSwitch = false,
+  }) async {
     await _preferencesLoaded;
     _cancelReconnectTimer();
     _reconnectAttempt = 0;
+    _hasRenderedFirstFrame = false;
+    _stalledSeconds = 0;
 
     // Guard against race condition: if same URL is being opened and still loading, skip
     if (_currentOpenUrl == item.streamUrl &&
-        state.playbackState == PlaybackState.loading) {
+        (state.playbackState == PlaybackState.connecting ||
+            state.playbackState == PlaybackState.loading)) {
       return;
     }
-    await _saveCurrentPosition();
+    if (!isChannelSwitch) {
+      await _saveCurrentPosition();
+    }
     // Clear stale URL on error so retries aren't blocked
-    if (state.playbackState == PlaybackState.failed) {
+    if (state.playbackState.isError) {
       _currentOpenUrl = null;
     }
     _currentOpenUrl = item.streamUrl;
 
-    final resumeSeconds = item.positionSeconds > 0
-        ? item.positionSeconds
-        : await _loadSavedPosition(item) ?? 0;
+    final resumeSeconds = item.type == MediaType.live
+        ? 0
+        : (item.positionSeconds > 0
+            ? item.positionSeconds
+            : await _loadSavedPosition(item) ?? 0);
 
+    _bufferingSince = DateTime.now();
     state = state.copyWith(
       currentItem: item.copyWith(positionSeconds: resumeSeconds),
-      playbackState: PlaybackState.initializing,
+      playbackState: PlaybackState.connecting,
       isMiniPlayerVisible: !startFullscreen,
       isFullscreen: startFullscreen,
       position: Duration(seconds: resumeSeconds),
       clearError: true,
       clearNextEpisode: true,
-      isBuffering: false,
+      isBuffering: true,
     );
 
-    if (item.streamUrl != null && item.streamUrl!.isNotEmpty) {
-      try {
-        state = state.copyWith(playbackState: PlaybackState.loading);
-        final headers = await _getHttpHeaders();
-        final resolvedUrl = await _resolvePlaybackUrl(item);
-        if (_usingLibVlc) {
-          try {
-            await player.stop();
-          } catch (_) {}
-          await libVlcBridge.open(
-            url: resolvedUrl,
-            headers: headers,
-            start: resumeSeconds > 0
-                ? Duration(seconds: resumeSeconds)
-                : Duration.zero,
-          );
-          await libVlcBridge.setVolume(state.volume);
-          await libVlcBridge.setRate(state.playbackRate);
-        } else {
-          try {
-            await libVlcBridge.stop();
-          } catch (_) {}
-          await applyProfile(state.playbackProfile);
-          await player.open(
-            Media(
-              resolvedUrl,
-              httpHeaders: headers,
-              start: resumeSeconds > 0 ? Duration(seconds: resumeSeconds) : null,
-            ),
-            play: true,
-          );
-          try {
-            await player.setRate(state.playbackRate);
-          } catch (_) {}
-        }
+    if (item.streamUrl == null || item.streamUrl!.isEmpty) {
+      _bufferingSince = null;
+      state = state.copyWith(
+        isBuffering: false,
+        playbackState: PlaybackState.streamUnavailable,
+        errorMessage: 'No stream URL is available for this item.',
+      );
+      return;
+    }
 
-        await _persistEpisodeForContinueWatching(item);
-        // Record in recently viewed
-        _recordRecentlyViewed(item);
-      } catch (e) {
+    try {
+      final headers = await _getHttpHeaders();
+      final resolvedUrl = await _resolvePlaybackUrl(item);
+
+      // Pre-flight validation + HLS ABR rendition discovery
+      final validation = await streamingManager.prepareStream(
+        resolvedUrl,
+        headers: headers,
+        isChannelSwitch: isChannelSwitch,
+      );
+
+      // Abort if user switched to another stream while validating
+      if (_currentOpenUrl != item.streamUrl) return;
+
+      if (!validation.isValid) {
+        _bufferingSince = null;
+        final errState = switch (validation.failureKind) {
+          StreamFailureKind.unsupportedFormat =>
+            PlaybackState.unsupportedFormat,
+          StreamFailureKind.streamUnavailable ||
+          StreamFailureKind.expiredOrUnauthorized =>
+            PlaybackState.streamUnavailable,
+          _ => PlaybackState.failed,
+        };
         state = state.copyWith(
-          playbackState: PlaybackState.failed,
-          errorMessage: _friendlyError(e.toString()),
+          isBuffering: false,
+          playbackState: errState,
+          errorMessage: validation.userMessage ?? 'Stream unavailable.',
         );
+        return;
       }
+
+      state = state.copyWith(playbackState: PlaybackState.loading);
+
+      if (_usingLibVlc) {
+        try {
+          await player.stop();
+        } catch (_) {}
+        await libVlcBridge.open(
+          url: resolvedUrl,
+          headers: headers,
+          start: resumeSeconds > 0
+              ? Duration(seconds: resumeSeconds)
+              : Duration.zero,
+        );
+        await libVlcBridge.setVolume(state.volume);
+        await libVlcBridge.setRate(state.playbackRate);
+      } else {
+        try {
+          await libVlcBridge.stop();
+        } catch (_) {}
+        await applyProfile(state.playbackProfile);
+        await player.open(
+          Media(
+            resolvedUrl,
+            httpHeaders: headers,
+            start: resumeSeconds > 0 ? Duration(seconds: resumeSeconds) : null,
+          ),
+          play: true,
+        );
+        try {
+          await player.setRate(state.playbackRate);
+        } catch (_) {}
+      }
+
+      unawaited(_persistEpisodeForContinueWatching(item));
+      unawaited(_recordRecentlyViewed(item));
+    } catch (e) {
+      _bufferingSince = null;
+      final kind = StreamValidator.classifyPlayerError(e.toString());
+      streamingManager.analytics.recordFailure(kind);
+      state = state.copyWith(
+        isBuffering: false,
+        playbackState: kind == StreamFailureKind.unsupportedFormat
+            ? PlaybackState.unsupportedFormat
+            : PlaybackState.failed,
+        errorMessage: _friendlyError(e.toString()),
+      );
     }
   }
 
+  /// Fast channel switch: reuses the active player instance directly (no
+  /// redundant stop/recreate) and persists position asynchronously.
   Future<void> switchStream(MediaItem item) async {
-    // Remember previous live channel for quick back-zapping on TV remotes
     if (state.currentItem?.type == MediaType.live &&
         item.type == MediaType.live &&
         state.currentItem?.providerId != item.providerId) {
       _previousLiveChannel = state.currentItem;
     }
-    // Proper stream switch: save position of current item first
-    await _saveCurrentPosition();
+    unawaited(_saveCurrentPosition());
     _cancelReconnectTimer();
     _reconnectAttempt = 0;
-    if (_usingLibVlc) {
-      await libVlcBridge.stop();
-    } else {
-      await player.stop();
-    }
-    await playItem(item, startFullscreen: state.isFullscreen);
+    await playItem(
+      item,
+      startFullscreen: state.isFullscreen,
+      isChannelSwitch: true,
+    );
   }
 
   Future<void> playPreviousWatchedChannel() async {
     final prev = _previousLiveChannel;
     if (prev == null) return;
     await switchStream(prev);
+  }
+
+  Future<List<ContentItemsTableData>> _getLiveChannelsForZapping(
+      String playlistId) async {
+    if (_cachedLivePlaylistId == playlistId && _cachedLiveChannels.isNotEmpty) {
+      return _cachedLiveChannels;
+    }
+    final channels = await (_db.select(_db.contentItemsTable)
+          ..where((t) =>
+              t.playlistId.equals(playlistId) & t.type.equals('live'))
+          ..orderBy([(t) => drift.OrderingTerm(expression: t.id)]))
+        .get();
+    _cachedLivePlaylistId = playlistId;
+    _cachedLiveChannels = channels;
+    return channels;
   }
 
   Future<void> playNextChannel() async {
@@ -964,11 +1202,7 @@ class PlayerController extends StateNotifier<PlayerState>
       return;
     }
     try {
-      final channels = await (_db.select(_db.contentItemsTable)
-            ..where((t) =>
-                t.playlistId.equals(item.playlistId!) & t.type.equals('live'))
-            ..orderBy([(t) => drift.OrderingTerm(expression: t.id)]))
-          .get();
+      final channels = await _getLiveChannelsForZapping(item.playlistId!);
       if (channels.isEmpty) return;
       final currentIndex =
           channels.indexWhere((c) => c.providerId == item.providerId);
@@ -996,11 +1230,7 @@ class PlayerController extends StateNotifier<PlayerState>
       return;
     }
     try {
-      final channels = await (_db.select(_db.contentItemsTable)
-            ..where((t) =>
-                t.playlistId.equals(item.playlistId!) & t.type.equals('live'))
-            ..orderBy([(t) => drift.OrderingTerm(expression: t.id)]))
-          .get();
+      final channels = await _getLiveChannelsForZapping(item.playlistId!);
       if (channels.isEmpty) return;
       final currentIndex =
           channels.indexWhere((c) => c.providerId == item.providerId);
@@ -1273,6 +1503,7 @@ class PlayerController extends StateNotifier<PlayerState>
   // ─── HTTP Headers ─────────────────────────────────────────────────────────
 
   Future<Map<String, String>> _getHttpHeaders() async {
+    if (_cachedHeaders != null) return _cachedHeaders!;
     String ua = 'VLC/3.0.18 LibVLC/3.0.18';
     String? ref;
     try {
@@ -1292,7 +1523,16 @@ class PlayerController extends StateNotifier<PlayerState>
       'Accept': '*/*',
     };
     if (ref != null && ref.isNotEmpty) headers['Referer'] = ref;
+    _cachedHeaders = headers;
     return headers;
+  }
+
+  /// Clears cached HTTP headers & live channel zapping list (e.g. after
+  /// updating playlist or custom User-Agent in Settings).
+  void invalidateRuntimeCaches() {
+    _cachedHeaders = null;
+    _cachedLivePlaylistId = null;
+    _cachedLiveChannels = const [];
   }
 
   // ─── Error Helpers ────────────────────────────────────────────────────────

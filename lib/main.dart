@@ -7,11 +7,13 @@ import 'core/routing/app_router.dart';
 import 'core/persistence/database_provider.dart';
 import 'core/security/secure_storage_service.dart';
 import 'features/content_details/domain/device_form_factor.dart';
+import 'features/player/streaming/streaming_manager.dart';
 import 'features/remote_control/data/remote_control_server.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  StreamingManager.configureResourceCaches();
 
   // Restore saved "Force Smart TV Mode" preference before first frame
   try {

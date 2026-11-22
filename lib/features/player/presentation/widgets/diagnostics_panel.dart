@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../data/player_controller.dart';
 import '../../domain/playback_enums.dart';
+import '../../streaming/streaming_models.dart';
 
 /// Technical diagnostics panel accessible from the player controls.
 /// Shows decoder type, HW acceleration, resolution, bitrate, buffer, etc.
@@ -152,19 +153,82 @@ class _PlaybackDiagnosticsPanelState
             value: '${playerState.bufferDuration.inSeconds}s',
           ),
           _DiagRow(
+            icon: Icons.timer_outlined,
+            label: 'Startup (TTFF)',
+            value: _diagnostics['ttff'] ?? 'measuring...',
+          ),
+          if (_diagnostics['avg_startup'] != null &&
+              _diagnostics['avg_startup'] != 'n/a')
+            _DiagRow(
+              icon: Icons.av_timer_rounded,
+              label: 'Avg Startup',
+              value: _diagnostics['avg_startup']!,
+            ),
+          if (_diagnostics['channel_switch'] != null)
+            _DiagRow(
+              icon: Icons.swap_horiz_rounded,
+              label: 'Channel Switch',
+              value: _diagnostics['channel_switch']!,
+            ),
+          _DiagRow(
+            icon: Icons.sync_problem_rounded,
+            label: 'Rebuffers',
+            value:
+                '${_diagnostics['rebuffer_count'] ?? '0'} (${_diagnostics['buffering_total'] ?? '0.0s'})',
+            valueColor: (int.tryParse(_diagnostics['rebuffer_count'] ?? '0') ?? 0) >= 3
+                ? Colors.orangeAccent
+                : Colors.white70,
+          ),
+          _DiagRow(
+            icon: Icons.broken_image_outlined,
+            label: 'Dropped Frames',
+            value: _diagnostics['dropped_frames'] ?? '0',
+            valueColor: (int.tryParse(_diagnostics['dropped_frames'] ?? '0') ?? 0) > 60
+                ? Colors.orangeAccent
+                : Colors.white70,
+          ),
+          if (_diagnostics['throughput'] != null)
+            _DiagRow(
+              icon: Icons.speed_rounded,
+              label: 'Throughput',
+              value: _diagnostics['throughput']!,
+            ),
+          _DiagRow(
             icon: Icons.play_circle_outline_rounded,
             label: 'State',
-            value: playerState.playbackState.name,
+            value: playerState.playbackState.displayLabel,
             valueColor: _stateColor(playerState.playbackState.name),
           ),
           _DiagRow(
             icon: Icons.wifi_rounded,
-            label: 'Reconnect Attempts',
-            value: '${playerState.reconnectAttempt} / 5',
+            label: 'Recovery',
+            value: _diagnostics['recovery_rate'] ??
+                '${playerState.reconnectAttempt} / 5',
             valueColor: playerState.reconnectAttempt > 0
                 ? Colors.orangeAccent
                 : Colors.white70,
           ),
+          if (_diagnostics['root_cause'] != null) ...[
+            const SizedBox(height: 6),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              child: Text(
+                _diagnostics['root_cause']!,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11.5,
+                  height: 1.3,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(
@@ -177,33 +241,24 @@ class _PlaybackDiagnosticsPanelState
                 ),
                 const Spacer(),
                 DropdownButtonHideUnderline(
-                  child: DropdownButton<PlaybackProfile>(
-                    value: playerState.playbackProfile,
+                  child: DropdownButton<BufferProfile>(
+                    value: ref.read(playerControllerProvider.notifier).bufferProfile,
                     dropdownColor: const Color(0xFF202027),
                     style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    items: const [
-                      DropdownMenuItem(
-                        value: PlaybackProfile.auto,
-                        child: Text('Balanced'),
-                      ),
-                      DropdownMenuItem(
-                        value: PlaybackProfile.dataSaver,
-                        child: Text('Data saver'),
-                      ),
-                      DropdownMenuItem(
-                        value: PlaybackProfile.moreStable,
-                        child: Text('More stable'),
-                      ),
-                      DropdownMenuItem(
-                        value: PlaybackProfile.highQuality,
-                        child: Text('High quality'),
-                      ),
-                    ],
+                    items: BufferProfile.values
+                        .map(
+                          (p) => DropdownMenuItem(
+                            value: p,
+                            child: Text(p.label),
+                          ),
+                        )
+                        .toList(),
                     onChanged: (profile) {
                       if (profile != null) {
                         ref
                             .read(playerControllerProvider.notifier)
-                            .setPlaybackProfile(profile);
+                            .setBufferProfile(profile);
+                        _refresh();
                       }
                     },
                   ),
@@ -211,6 +266,55 @@ class _PlaybackDiagnosticsPanelState
               ],
             ),
           ),
+          if (ref.read(playerControllerProvider.notifier).availableRenditions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(
+                children: [
+                  const Icon(Icons.hd_rounded, color: Colors.white38, size: 15),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Quality (ABR)',
+                    style: TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  DropdownButtonHideUnderline(
+                    child: DropdownButton<StreamRendition>(
+                      value: ref
+                          .read(playerControllerProvider.notifier)
+                          .selectedRendition,
+                      dropdownColor: const Color(0xFF202027),
+                      style:
+                          const TextStyle(color: Colors.white70, fontSize: 12),
+                      items: ref
+                          .read(playerControllerProvider.notifier)
+                          .availableRenditions
+                          .map(
+                            (r) => DropdownMenuItem(
+                              value: r,
+                              child: Text(r.label),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (rendition) {
+                        if (rendition != null) {
+                          ref
+                              .read(playerControllerProvider.notifier)
+                              .selectQuality(rendition);
+                          _refresh();
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            _DiagRow(
+              icon: Icons.hd_outlined,
+              label: 'Quality',
+              value: _diagnostics['quality'] ?? 'Fixed quality (ABR N/A)',
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 5),
             child: Row(

@@ -2,6 +2,7 @@
 enum PlaybackState {
   idle,
   initializing,
+  connecting,
   loading,
   buffering,
   playing,
@@ -9,7 +10,32 @@ enum PlaybackState {
   seeking,
   reconnecting,
   completed,
+  streamUnavailable,
+  unsupportedFormat,
   failed,
+}
+
+extension PlaybackStateLabel on PlaybackState {
+  bool get isError =>
+      this == PlaybackState.failed ||
+      this == PlaybackState.streamUnavailable ||
+      this == PlaybackState.unsupportedFormat;
+
+  String get displayLabel => switch (this) {
+        PlaybackState.idle => 'Idle',
+        PlaybackState.initializing => 'Initializing',
+        PlaybackState.connecting => 'Connecting...',
+        PlaybackState.loading => 'Loading stream...',
+        PlaybackState.buffering => 'Buffering...',
+        PlaybackState.playing => 'Playing',
+        PlaybackState.paused => 'Paused',
+        PlaybackState.seeking => 'Seeking...',
+        PlaybackState.reconnecting => 'Reconnecting...',
+        PlaybackState.completed => 'Completed',
+        PlaybackState.streamUnavailable => 'Stream unavailable',
+        PlaybackState.unsupportedFormat => 'Unsupported format',
+        PlaybackState.failed => 'Playback error',
+      };
 }
 
 /// Playback profiles controlling decoder and buffer settings.

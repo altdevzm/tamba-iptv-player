@@ -72,6 +72,13 @@
     return `${base}/movie/${username}/${password}/${item.stream_id}.${ext}`;
   }
 
+  const BUFFER_PROFILES = {
+    lowLatency: { maxBufferLength: 8, maxMaxBufferLength: 16, backBufferLength: 4, lowLatencyMode: true },
+    balanced: { maxBufferLength: 20, maxMaxBufferLength: 40, backBufferLength: 10, lowLatencyMode: false },
+    stable: { maxBufferLength: 45, maxMaxBufferLength: 90, backBufferLength: 15, lowLatencyMode: false },
+  };
+  const BACKOFF_MS = [1000, 2000, 4000, 8000, 15000];
+
   function openPlayer(type, index) {
     const list = type === 'live' ? state.live : state.movies;
     const item = list[index];
@@ -79,7 +86,11 @@
 
     state.currentType = type;
     state.currentIndex = index;
+    state.retryCount = 0;
+    clearTimeout(state.retryTimer);
     const url = buildStreamUrl(type, item);
+    const profileKey = localStorage.getItem('tamba_buffer_profile') || 'balanced';
+    const bufCfg = BUFFER_PROFILES[profileKey] || BUFFER_PROFILES.balanced;
 
     titleEl.textContent = item.name || item.title || 'Stream';
     badgeEl.classList.toggle('hidden', type !== 'live');
@@ -95,26 +106,52 @@
     }
 
     if (window.Hls && window.Hls.isSupported() && url.endsWith('.m3u8')) {
-      const hls = new window.Hls({ enableWorker: true, lowLatencyMode: true });
+      const hls = new window.Hls({
+        enableWorker: true,
+        startLevel: -1, // Automatic ABR
+        capLevelToPlayerSize: true,
+        ...bufCfg,
+      });
       hls.loadSource(url);
       hls.attachMedia(videoEl);
       hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+        state.retryCount = 0;
         videoEl.play().catch(() => {});
         statusEl.textContent = type === 'live' ? 'Live' : 'Playing';
       });
       hls.on(window.Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) statusEl.textContent = 'Stream error – press Retry or switch channel';
+        if (!data.fatal) return;
+        if (state.retryCount >= BACKOFF_MS.length) {
+          statusEl.textContent = 'Stream unavailable – press Retry or switch channel';
+          return;
+        }
+        const delay = BACKOFF_MS[state.retryCount++];
+        statusEl.textContent = `Reconnecting (${state.retryCount}/${BACKOFF_MS.length})...`;
+        clearTimeout(state.retryTimer);
+        state.retryTimer = setTimeout(() => {
+          if (!state.hls) return;
+          if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+            state.hls.startLoad();
+          } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+            state.hls.recoverMediaError();
+          } else {
+            openPlayer(type, index);
+          }
+        }, delay);
       });
       state.hls = hls;
     } else {
       videoEl.src = url;
-      videoEl.play().catch(() => {});
+      videoEl.play().catch(() => {
+        statusEl.textContent = 'Unsupported format or playback blocked';
+      });
       statusEl.textContent = type === 'live' ? 'Live' : 'Playing';
     }
     btnPlayPause.focus();
   }
 
   function closePlayer() {
+    clearTimeout(state.retryTimer);
     if (state.hls) {
       state.hls.destroy();
       state.hls = null;
