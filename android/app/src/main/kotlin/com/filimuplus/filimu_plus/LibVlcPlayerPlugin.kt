@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import android.view.View
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -22,17 +24,29 @@ class LibVlcPlayerPlugin(
 ) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
 
     companion object {
+        private const val TAG = "TambaLibVLC"
         const val METHOD_CHANNEL = "tamba_iptv/libvlc"
         const val EVENT_CHANNEL = "tamba_iptv/libvlc_events"
         const val VIEW_TYPE = "tamba_iptv/libvlc_view"
+        private const val TIME_EVENT_THROTTLE_MS = 500L
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var libVlc: LibVLC? = null
-    private var mediaPlayer: MediaPlayer? = null
+    private val vlcLock = Any()
+
+    @Volatile private var libVlc: LibVLC? = null
+    @Volatile private var mediaPlayer: MediaPlayer? = null
     private var currentMedia: Media? = null
     private var attachedLayout: VLCVideoLayout? = null
-    private var eventSink: EventChannel.EventSink? = null
+    @Volatile private var eventSink: EventChannel.EventSink? = null
+
+    // Automatic HW -> SW decoder fallback tracking for incompatible TV MediaCodec profiles
+    private var lastOpenUrl: String? = null
+    private var lastOpenHeaders: Map<String, String> = emptyMap()
+    private var lastOpenStartMs: Long = 0L
+    private var lastOpenHwDecoding: Boolean = true
+    private var swFallbackAttemptedForCurrentUrl: Boolean = false
+    private var lastTimeEmitMs: Long = 0L
 
     fun register(flutterEngine: FlutterEngine) {
         MethodChannel(
@@ -76,35 +90,55 @@ class LibVlcPlayerPlugin(
         attachedLayout?.let { layout ->
             attachLayout(layout)
         }
+        Log.i(TAG, "LibVLC MediaPlayer initialized")
         return player
     }
 
     internal fun attachLayout(layout: VLCVideoLayout) {
-        mainHandler.post {
-            val player = ensureInitialized()
-            if (attachedLayout != null && attachedLayout !== layout) {
+        val task = Runnable {
+            synchronized(vlcLock) {
+                val player = ensureInitialized()
+                if (attachedLayout != null && attachedLayout !== layout) {
+                    try {
+                        player.detachViews()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "detachViews before re-attach failed: ${e.message}")
+                    }
+                }
+                attachedLayout = layout
                 try {
-                    player.detachViews()
-                } catch (_: Exception) {
+                    player.attachViews(layout, null, true, false)
+                } catch (e: Exception) {
+                    Log.w(TAG, "attachViews failed: ${e.message}")
                 }
             }
-            attachedLayout = layout
-            try {
-                player.attachViews(layout, null, true, false)
-            } catch (_: Exception) {
-            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            task.run()
+        } else {
+            mainHandler.post(task)
         }
     }
 
     internal fun detachLayout(layout: VLCVideoLayout) {
-        mainHandler.post {
-            if (attachedLayout === layout) {
-                try {
-                    mediaPlayer?.detachViews()
-                } catch (_: Exception) {
+        // Detach SYNCHRONOUSLY on the main thread before Android destroys the
+        // underlying SurfaceView to prevent native EGL_BAD_SURFACE / SIGSEGV crashes.
+        val task = Runnable {
+            synchronized(vlcLock) {
+                if (attachedLayout === layout) {
+                    try {
+                        mediaPlayer?.detachViews()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "detachViews failed: ${e.message}")
+                    }
+                    attachedLayout = null
                 }
-                attachedLayout = null
             }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            task.run()
+        } else {
+            mainHandler.post(task)
         }
     }
 
@@ -147,16 +181,33 @@ class LibVlcPlayerPlugin(
                 emit(mapOf("type" to "completed"))
             }
             MediaPlayer.Event.EncounteredError -> {
-                emit(mapOf("type" to "buffering", "buffering" to false))
-                emit(mapOf("type" to "playing", "playing" to false))
-                emit(
-                    mapOf(
-                        "type" to "error",
-                        "message" to "LibVLC could not play this stream. The source may be offline or unsupported."
-                    )
-                )
+                // If hardware decoding (MediaCodec) failed on an incompatible TV
+                // video profile, automatically retry once with software decoding.
+                val retryUrl = lastOpenUrl
+                if (lastOpenHwDecoding && !swFallbackAttemptedForCurrentUrl && !retryUrl.isNullOrBlank()) {
+                    swFallbackAttemptedForCurrentUrl = true
+                    Log.w(TAG, "Hardware decoder error detected; retrying with software decoding")
+                    mainHandler.post {
+                        try {
+                            openInternal(
+                                url = retryUrl,
+                                headers = lastOpenHeaders,
+                                startMs = lastOpenStartMs,
+                                hwDecoding = false
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Software fallback open failed: ${e.message}")
+                            emitError()
+                        }
+                    }
+                    return
+                }
+                emitError()
             }
             MediaPlayer.Event.TimeChanged -> {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastTimeEmitMs < TIME_EVENT_THROTTLE_MS) return
+                lastTimeEmitMs = now
                 emit(
                     mapOf(
                         "type" to "position",
@@ -181,6 +232,80 @@ class LibVlcPlayerPlugin(
         }
     }
 
+    private fun emitError() {
+        emit(mapOf("type" to "buffering", "buffering" to false))
+        emit(mapOf("type" to "playing", "playing" to false))
+        emit(
+            mapOf(
+                "type" to "error",
+                "message" to "LibVLC could not play this stream. The source may be offline or unsupported."
+            )
+        )
+    }
+
+    private fun openInternal(
+        url: String,
+        headers: Map<String, String>,
+        startMs: Long,
+        hwDecoding: Boolean,
+    ) {
+        synchronized(vlcLock) {
+            val player = ensureInitialized()
+            val vlc = libVlc!!
+
+            // CRITICAL: Always stop active decoding and clear player.media BEFORE
+            // releasing the previous Media object to prevent native use-after-free SIGSEGV.
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                player.media = null
+            } catch (_: Exception) {
+            }
+            try {
+                currentMedia?.release()
+            } catch (_: Exception) {
+            }
+            currentMedia = null
+
+            val media = Media(vlc, Uri.parse(url))
+            media.setHWDecoderEnabled(hwDecoding, false)
+            if (!hwDecoding) {
+                media.addOption(":codec=avcodec,all")
+            }
+            media.addOption(":network-caching=1500")
+            media.addOption(":live-caching=1500")
+            media.addOption(":clock-jitter=0")
+            media.addOption(":clock-synchro=0")
+            headers["User-Agent"]?.takeIf { it.isNotBlank() }?.let {
+                media.addOption(":http-user-agent=$it")
+            }
+            headers["Referer"]?.takeIf { it.isNotBlank() }?.let {
+                media.addOption(":http-referrer=$it")
+            }
+            if (startMs > 0) {
+                media.addOption(":start-time=${startMs / 1000}")
+            }
+
+            lastOpenUrl = url
+            lastOpenHeaders = headers
+            lastOpenStartMs = startMs
+            lastOpenHwDecoding = hwDecoding
+
+            currentMedia = media
+            player.media = media
+            attachedLayout?.let { layout ->
+                if (!player.vlcVout.areViewsAttached()) {
+                    player.attachViews(layout, null, true, false)
+                }
+            }
+            player.play()
+        }
+    }
+
     private fun emitTracks(player: MediaPlayer) {
         val audioTracks = player.audioTracks?.map {
             mapOf("id" to it.id, "name" to (it.name ?: "Track ${it.id}"))
@@ -202,7 +327,10 @@ class LibVlcPlayerPlugin(
 
     private fun emit(payload: Map<String, Any?>) {
         mainHandler.post {
-            eventSink?.success(payload)
+            try {
+                eventSink?.success(payload)
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -219,91 +347,78 @@ class LibVlcPlayerPlugin(
                 val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
 
                 try {
-                    val player = ensureInitialized()
-                    val vlc = libVlc!!
-                    currentMedia?.release()
-
-                    val media = Media(vlc, Uri.parse(url))
-                    media.setHWDecoderEnabled(hwDecoding, false)
-                    media.addOption(":network-caching=1500")
-                    media.addOption(":live-caching=1500")
-                    media.addOption(":clock-jitter=0")
-                    media.addOption(":clock-synchro=0")
-                    headers["User-Agent"]?.takeIf { it.isNotBlank() }?.let {
-                        media.addOption(":http-user-agent=$it")
-                    }
-                    headers["Referer"]?.takeIf { it.isNotBlank() }?.let {
-                        media.addOption(":http-referrer=$it")
-                    }
-                    if (startMs > 0) {
-                        media.addOption(":start-time=${startMs / 1000}")
-                    }
-
-                    currentMedia = media
-                    player.media = media
-                    attachedLayout?.let { layout ->
-                        if (!player.vlcVout.areViewsAttached()) {
-                            player.attachViews(layout, null, true, false)
-                        }
-                    }
-                    player.play()
+                    swFallbackAttemptedForCurrentUrl = false
+                    openInternal(
+                        url = url,
+                        headers = headers,
+                        startMs = startMs,
+                        hwDecoding = hwDecoding
+                    )
                     result.success(null)
                 } catch (e: Exception) {
+                    Log.e(TAG, "open failed: ${e.message}")
                     result.error("OPEN_FAILED", e.message, null)
                 }
             }
             "play" -> {
-                mediaPlayer?.play()
+                synchronized(vlcLock) { mediaPlayer?.play() }
                 result.success(null)
             }
             "pause" -> {
-                mediaPlayer?.pause()
+                synchronized(vlcLock) { mediaPlayer?.pause() }
                 result.success(null)
             }
             "togglePlayPause" -> {
-                val player = mediaPlayer
-                if (player != null) {
-                    if (player.isPlaying) player.pause() else player.play()
+                synchronized(vlcLock) {
+                    val player = mediaPlayer
+                    if (player != null) {
+                        if (player.isPlaying) player.pause() else player.play()
+                    }
                 }
                 result.success(null)
             }
             "stop" -> {
-                try {
-                    mediaPlayer?.stop()
-                    currentMedia?.release()
-                    currentMedia = null
-                } catch (_: Exception) {
+                synchronized(vlcLock) {
+                    try {
+                        mediaPlayer?.stop()
+                        mediaPlayer?.media = null
+                        currentMedia?.release()
+                        currentMedia = null
+                    } catch (_: Exception) {
+                    }
                 }
                 result.success(null)
             }
             "seek" -> {
                 val posMs = call.argument<Number>("positionMs")?.toLong() ?: 0L
-                mediaPlayer?.time = posMs.coerceAtLeast(0L)
+                synchronized(vlcLock) { mediaPlayer?.time = posMs.coerceAtLeast(0L) }
                 result.success(null)
             }
             "setVolume" -> {
                 val vol = call.argument<Number>("volume")?.toInt() ?: 100
-                mediaPlayer?.volume = vol.coerceIn(0, 100)
+                synchronized(vlcLock) { mediaPlayer?.volume = vol.coerceIn(0, 100) }
                 result.success(null)
             }
             "setRate" -> {
                 val rate = call.argument<Number>("rate")?.toFloat() ?: 1.0f
-                mediaPlayer?.rate = rate.coerceIn(0.25f, 4.0f)
+                synchronized(vlcLock) { mediaPlayer?.rate = rate.coerceIn(0.25f, 4.0f) }
                 result.success(null)
             }
             "setAudioTrack" -> {
                 val id = call.argument<Int>("id") ?: -1
-                mediaPlayer?.audioTrack = id
+                synchronized(vlcLock) { mediaPlayer?.audioTrack = id }
                 result.success(null)
             }
             "setSubtitleTrack" -> {
                 val id = call.argument<Int>("id") ?: -1
-                mediaPlayer?.spuTrack = id
+                synchronized(vlcLock) { mediaPlayer?.spuTrack = id }
                 result.success(null)
             }
             "setAspectRatio" -> {
                 val ratio = call.argument<String>("aspectRatio")
-                mediaPlayer?.aspectRatio = if (ratio.isNullOrBlank()) null else ratio
+                synchronized(vlcLock) {
+                    mediaPlayer?.aspectRatio = if (ratio.isNullOrBlank()) null else ratio
+                }
                 result.success(null)
             }
             else -> result.notImplemented()
@@ -319,18 +434,23 @@ class LibVlcPlayerPlugin(
     }
 
     fun dispose() {
-        try {
-            mediaPlayer?.stop()
-            mediaPlayer?.detachViews()
-            currentMedia?.release()
-            mediaPlayer?.release()
-            libVlc?.release()
-        } catch (_: Exception) {
-        } finally {
-            currentMedia = null
-            mediaPlayer = null
-            libVlc = null
-            attachedLayout = null
+        synchronized(vlcLock) {
+            try {
+                mediaPlayer?.setEventListener(null)
+                mediaPlayer?.stop()
+                mediaPlayer?.media = null
+                mediaPlayer?.detachViews()
+                currentMedia?.release()
+                mediaPlayer?.release()
+                libVlc?.release()
+            } catch (_: Exception) {
+            } finally {
+                currentMedia = null
+                mediaPlayer = null
+                libVlc = null
+                attachedLayout = null
+                eventSink = null
+            }
         }
     }
 }

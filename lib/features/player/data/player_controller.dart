@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:drift/drift.dart' as drift;
 
+import '../../../core/diagnostics/app_logger.dart';
 import '../../../shared/models/media_item.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
@@ -218,7 +219,6 @@ class PlayerController extends StateNotifier<PlayerState>
   Map<String, String>? _cachedHeaders;
   String? _cachedLivePlaylistId;
   List<ContentItemsTableData> _cachedLiveChannels = const [];
-  Map<String, LogicalChannel> _logicalByProviderId = const {};
   Timer? _tissNotificationTimer;
 
   bool get _usingLibVlc =>
@@ -1184,12 +1184,38 @@ class PlayerController extends StateNotifier<PlayerState>
       return;
     }
     try {
-      await _getLiveChannelsForZapping(item.playlistId!);
-      final logical = _logicalByProviderId[item.providerId!];
+      // Targeted cross-category SQLite query (~10 KB RAM) instead of loading
+      // 30,000+ live channels into RAM on low-memory Smart TVs!
+      final baseName = ChannelGroupingEngine.normalizeDisplayName(item.title);
+      final searchKey = ChannelGroupingEngine.normalizedKey(baseName);
+      final words = searchKey.split(' ').where((w) => w.length >= 2).toList();
+      final likeToken = words.isNotEmpty
+          ? words.take(2).join('%')
+          : baseName.trim();
+
+      final candidates = await (_db.select(_db.contentItemsTable)
+            ..where((t) =>
+                t.playlistId.equals(item.playlistId!) &
+                t.type.equals('live') &
+                (likeToken.isNotEmpty
+                    ? t.title.like('%$likeToken%')
+                    : t.providerId.equals(item.providerId!)))
+            ..limit(60))
+          .get();
+
+      final grouped = ChannelGroupingEngine.groupChannels(candidates);
+      LogicalChannel? logical;
+      for (final g in grouped) {
+        if (g.alternatives.any((a) => a.providerId == item.providerId)) {
+          logical = g;
+          break;
+        }
+      }
+
       if (logical != null) {
         final matchingAlt = logical.alternatives.firstWhere(
           (a) => a.providerId == item.providerId,
-          orElse: () => logical.primaryStream,
+          orElse: () => logical!.primaryStream,
         );
         tissController.attachLogicalChannel(
           logical,
@@ -1199,7 +1225,9 @@ class PlayerController extends StateNotifier<PlayerState>
       } else {
         tissController.detach();
       }
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.warn('SmartStream', 'Attach live channel skipped: $e');
+    }
   }
 
   /// Lightweight background reachability probe using a short HTTP GET header
@@ -1665,21 +1693,15 @@ class PlayerController extends StateNotifier<PlayerState>
     if (_cachedLivePlaylistId == playlistId && _cachedLiveChannels.isNotEmpty) {
       return _cachedLiveChannels;
     }
+    // Bound zapping cache to 1,500 channels max so RAM never spikes on 30k+ playlists
     final channels = await (_db.select(_db.contentItemsTable)
           ..where((t) =>
               t.playlistId.equals(playlistId) & t.type.equals('live'))
-          ..orderBy([(t) => drift.OrderingTerm(expression: t.id)]))
+          ..orderBy([(t) => drift.OrderingTerm(expression: t.id)])
+          ..limit(1500))
         .get();
     _cachedLivePlaylistId = playlistId;
     _cachedLiveChannels = channels;
-    final grouped = ChannelGroupingEngine.groupChannels(channels);
-    final lookup = <String, LogicalChannel>{};
-    for (final logical in grouped) {
-      for (final alt in logical.alternatives) {
-        lookup[alt.providerId] = logical;
-      }
-    }
-    _logicalByProviderId = lookup;
     return channels;
   }
 
@@ -1822,6 +1844,9 @@ class PlayerController extends StateNotifier<PlayerState>
       if (_player != null) await _player!.stop();
       await libVlcBridge.stop();
     } catch (_) {}
+    // Release runtime zapping cache when leaving playback to keep Smart TV RAM low
+    _cachedLiveChannels = const [];
+    _cachedLivePlaylistId = null;
   }
 
   Future<void> closeMiniPlayer() => closePlayer();
@@ -1829,8 +1854,10 @@ class PlayerController extends StateNotifier<PlayerState>
   // ─── Persistence ─────────────────────────────────────────────────────────
 
   void _startPositionSaveTimer() {
-    _positionSaveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      _saveCurrentPosition();
+    _positionSaveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (state.isPlaying && state.currentItem != null) {
+        _saveCurrentPosition();
+      }
     });
   }
 
@@ -2050,6 +2077,18 @@ class PlayerController extends StateNotifier<PlayerState>
   }
 
   // ─── Dispose ─────────────────────────────────────────────────────────────
+
+  @override
+  void didHaveMemoryPressure() {
+    // Respond immediately to Android TV low-memory trim signals before LMKD SIGKILL
+    try {
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+    } catch (_) {}
+    _cachedLiveChannels = const [];
+    _cachedLivePlaylistId = null;
+    AppLogger.warn('Memory', 'Handled OS memory pressure: cleared image & zapping caches');
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
