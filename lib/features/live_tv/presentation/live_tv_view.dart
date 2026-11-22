@@ -271,6 +271,235 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
     notifier.filterByCategory(cat.id);
   }
 
+  Future<void> _showMobileCategoryDropdown(
+    List<CategoriesTableData> categories,
+    LiveTvState liveTvState,
+  ) async {
+    final searchCtrl = TextEditingController();
+    var query = '';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final filtered = query.isEmpty
+                ? categories
+                : categories
+                    .where((c) =>
+                        c.name.toLowerCase().contains(query.toLowerCase()))
+                    .toList();
+
+            return Container(
+              height: MediaQuery.sizeOf(ctx).height * 0.72,
+              decoration: BoxDecoration(
+                color: const Color(0xFF141418),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(22)),
+                border: Border(
+                  top: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 4,
+                      margin: const EdgeInsets.only(top: 10, bottom: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.category_rounded,
+                              color: AppColors.primary, size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'TV Categories (${categories.length})',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            icon: const Icon(Icons.close_rounded,
+                                color: Colors.white60, size: 20),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                      child: TextField(
+                        controller: searchCtrl,
+                        onChanged: (v) => setSheetState(() => query = v.trim()),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'Filter categories...',
+                          hintStyle: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.35),
+                              fontSize: 13.5),
+                          prefixIcon: const Icon(Icons.search_rounded,
+                              color: Colors.white54, size: 19),
+                          suffixIcon: query.isNotEmpty
+                              ? IconButton(
+                                  onPressed: () {
+                                    searchCtrl.clear();
+                                    setSheetState(() => query = '');
+                                  },
+                                  icon: const Icon(Icons.clear_rounded,
+                                      color: Colors.white54, size: 18),
+                                )
+                              : null,
+                          filled: true,
+                          fillColor: const Color(0xFF1E1E26),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                                color: Colors.white.withValues(alpha: 0.08)),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(
+                                color: Colors.white.withValues(alpha: 0.08)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide:
+                                const BorderSide(color: AppColors.primary),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+                        itemCount: filtered.length + (query.isEmpty ? 1 : 0),
+                        separatorBuilder: (_, __) => Divider(
+                          height: 1,
+                          color: Colors.white.withValues(alpha: 0.05),
+                        ),
+                        itemBuilder: (context, index) {
+                          if (query.isEmpty && index == 0) {
+                            final isSelected =
+                                liveTvState.selectedCategoryId == null;
+                            return ListTile(
+                              dense: true,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              tileColor: isSelected
+                                  ? AppColors.primary.withValues(alpha: 0.14)
+                                  : Colors.transparent,
+                              leading: Icon(
+                                Icons.live_tv_rounded,
+                                size: 18,
+                                color: isSelected
+                                    ? AppColors.primary
+                                    : Colors.white60,
+                              ),
+                              title: Text(
+                                'All Channels',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: isSelected
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                              trailing: isSelected
+                                  ? const Icon(Icons.check_rounded,
+                                      color: AppColors.primary, size: 18)
+                                  : null,
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                _handleCategorySelect(null);
+                              },
+                            );
+                          }
+
+                          final cat =
+                              filtered[query.isEmpty ? index - 1 : index];
+                          final isSelected =
+                              liveTvState.selectedCategoryId == cat.id;
+                          final sensitive = cat.locked ||
+                              cat.name.toLowerCase().contains('adult') ||
+                              cat.name.toLowerCase().contains('xxx') ||
+                              cat.name.toLowerCase().contains('18+');
+                          final locked = sensitive &&
+                              !liveTvState.unlockedCategoryIds.contains(cat.id);
+
+                          return ListTile(
+                            dense: true,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            tileColor: isSelected
+                                ? AppColors.primary.withValues(alpha: 0.14)
+                                : Colors.transparent,
+                            leading: Icon(
+                              locked
+                                  ? Icons.lock_outline_rounded
+                                  : Icons.folder_outlined,
+                              size: 18,
+                              color: locked
+                                  ? Colors.amber
+                                  : (isSelected
+                                      ? AppColors.primary
+                                      : Colors.white54),
+                            ),
+                            title: Text(
+                              cat.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: isSelected
+                                    ? FontWeight.w700
+                                    : FontWeight.w500,
+                              ),
+                            ),
+                            trailing: isSelected
+                                ? const Icon(Icons.check_rounded,
+                                    color: AppColors.primary, size: 18)
+                                : null,
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              _handleCategorySelect(cat);
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    searchCtrl.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final activePlaylistId = ref.watch(activePlaylistIdProvider);
@@ -604,10 +833,90 @@ class _LiveTvViewState extends ConsumerState<LiveTvView> {
 
             const SizedBox(height: 12),
 
-            // ---- Live TV category chips ----
+            // ---- Live TV categories (dropdown on mobile, chips on TV/desktop) ----
             categoriesAsync.when(
               data: (categories) {
                 if (categories.isEmpty) return const SizedBox.shrink();
+
+                if (isMobile) {
+                  String selectedLabel = 'All Channels';
+                  if (liveTvState.selectedCategoryId != null) {
+                    for (final c in categories) {
+                      if (c.id == liveTvState.selectedCategoryId) {
+                        selectedLabel = c.name;
+                        break;
+                      }
+                    }
+                  }
+                  final hasCategoryFilter =
+                      liveTvState.selectedCategoryId != null;
+
+                  return Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () =>
+                          _showMobileCategoryDropdown(categories, liveTvState),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 11),
+                        decoration: BoxDecoration(
+                          color: hasCategoryFilter
+                              ? AppColors.primary.withValues(alpha: 0.14)
+                              : const Color(0xFF1A1A22),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: hasCategoryFilter
+                                ? AppColors.primary.withValues(alpha: 0.65)
+                                : Colors.white.withValues(alpha: 0.12),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.category_rounded,
+                              size: 17,
+                              color: hasCategoryFilter
+                                  ? AppColors.primary
+                                  : Colors.white70,
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                selectedLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '${categories.length}',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.45),
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              size: 20,
+                              color: hasCategoryFilter
+                                  ? AppColors.primary
+                                  : Colors.white70,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }
+
                 return SizedBox(
                   height: 36,
                   child: ListView.separated(
