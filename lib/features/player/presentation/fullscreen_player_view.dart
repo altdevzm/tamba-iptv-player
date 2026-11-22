@@ -509,15 +509,16 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               const Icon(
-                                Icons.auto_awesome_rounded,
+                                Icons.high_quality_rounded,
                                 color: AppColors.primary,
-                                size: 16,
+                                size: 18,
                               ),
                               const SizedBox(width: 8),
                               Flexible(
                                 child: Text(
                                   playerState.tissNotification!,
-                                  maxLines: 1,
+                                  maxLines: 2,
+                                  softWrap: true,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                     color: Colors.white,
@@ -1151,7 +1152,7 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                   dense: true,
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(
-                    Icons.auto_awesome_rounded,
+                    Icons.tune_rounded,
                     color: tiss.isAutoMode ? AppColors.primary : Colors.white60,
                     size: 20,
                   ),

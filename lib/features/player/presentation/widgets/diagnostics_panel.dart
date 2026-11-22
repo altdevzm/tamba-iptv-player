@@ -388,7 +388,7 @@ class _PlaybackDiagnosticsPanelState
       const SizedBox(height: 10),
       const Row(
         children: [
-          Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
+          Icon(Icons.high_quality_rounded, color: AppColors.primary, size: 16),
           SizedBox(width: 6),
           Text(
             'Tamba SmartStream (TISS)',

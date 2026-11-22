@@ -522,7 +522,7 @@ class PlayerController extends StateNotifier<PlayerState>
   // ─── Reconnection & Stall / Infinite-Buffer Guard ─────────────────────────
 
   void _startStallDetection() {
-    _stallDetectionTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _stallDetectionTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       final item = state.currentItem;
       if (item == null || _isRecovering) return;
 
@@ -536,6 +536,18 @@ class PlayerController extends StateNotifier<PlayerState>
           _bufferingSince != null) {
         final stuckSecs =
             DateTime.now().difference(_bufferingSince!).inSeconds;
+
+        // Fast SmartStream failover on sustained live buffering (6s)
+        if (item.type == MediaType.live &&
+            tissController.hasAlternatives &&
+            tissController.isAutoMode &&
+            tissController.config.automaticSwitchingEnabled &&
+            stuckSecs >= 6) {
+          _bufferingSince = null;
+          unawaited(_triggerTissFailover(reason: 'sustained_buffering'));
+          return;
+        }
+
         if (stuckSecs >= cfg.bufferingTimeoutSecs) {
           _bufferingSince = null;
           _scheduleReconnect(reason: 'buffering_timeout');
@@ -575,7 +587,7 @@ class PlayerController extends StateNotifier<PlayerState>
         return;
       }
 
-      _stalledSeconds += 3;
+      _stalledSeconds += 2;
       if (_stalledSeconds >= cfg.stallTimeoutSecs) {
         _stalledSeconds = 0;
         if (item.type == MediaType.live && tissController.hasAlternatives) {
@@ -1147,7 +1159,7 @@ class PlayerController extends StateNotifier<PlayerState>
     );
     if (nextAlt == null) {
       _showTissNotification(
-        'All available stream alternatives are currently unavailable.',
+        'No backup feeds available — reconnecting stream.',
       );
       _scheduleReconnect(reason: reason);
       return;
@@ -1156,7 +1168,7 @@ class PlayerController extends StateNotifier<PlayerState>
     await _commitTissSwitch(
       nextAlt,
       notification:
-          'Network unstable. Switching to ${nextAlt.displayQuality}.',
+          'Switching to ${nextAlt.displayQuality} for smoother playback.',
     );
   }
 
@@ -1191,6 +1203,8 @@ class PlayerController extends StateNotifier<PlayerState>
       }
       _currentOpenUrl = target.streamUrl;
       _hasRenderedFirstFrame = false;
+      _stalledSeconds = 0;
+      _lastObservedPosition = null;
       _bufferingSince = DateTime.now();
 
       state = state.copyWith(
