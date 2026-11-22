@@ -35,19 +35,21 @@ class _PlatformNavigationSidebarState extends State<PlatformNavigationSidebar> {
 
   @override
   Widget build(BuildContext context) {
-    final showLabels = !widget.compact || _expanded;
+    // On Smart TVs, always show labels on a sleek 220px sidebar so Home,
+    // Live TV, Movies, Series, Search, and Settings are always visible.
+    final showLabels = widget.isTv || !widget.compact || _expanded;
 
     return Focus(
       skipTraversal: true,
       onFocusChange: (hasFocus) {
-        if (widget.isTv && mounted) {
+        if (!widget.isTv && widget.compact && mounted) {
           setState(() => _expanded = hasFocus);
         }
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
+        duration: const Duration(milliseconds: 160),
         curve: Curves.easeOutCubic,
-        width: showLabels ? (widget.isTv ? 260 : 238) : 76,
+        width: showLabels ? (widget.isTv ? 220 : 238) : 76,
         decoration: BoxDecoration(
           color: AppColors.background.withValues(alpha: 0.97),
           border: Border(
@@ -76,7 +78,7 @@ class _PlatformNavigationSidebarState extends State<PlatformNavigationSidebar> {
                         ),
                       ),
                     ),
-                  if (widget.compact)
+                  if (widget.compact && !widget.isTv)
                     IconButton(
                       tooltip: showLabels ? 'Collapse navigation' : 'Expand navigation',
                       onPressed: () => setState(() => _expanded = !_expanded),
@@ -196,28 +198,26 @@ class _Brand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
-      children: [
-        Text(
-          'TAMBA',
-          style: TextStyle(
-            color: AppColors.primary,
-            fontSize: 17,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.4,
+    return const ClipRect(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              'TAMBA IPTV',
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: TextStyle(
+                color: AppColors.primary,
+                fontSize: 17,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 1.2,
+              ),
+            ),
           ),
-        ),
-        SizedBox(width: 5),
-        Text(
-          'IPTV',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 17,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -247,12 +247,16 @@ class _SearchField extends StatelessWidget {
               color: isActive ? AppColors.primary : Colors.white70,
             ),
             const SizedBox(width: 10),
-            Text(
-              'Search all...',
-              style: TextStyle(
-                color: isActive ? Colors.white : AppColors.textSecondary,
-                fontSize: 13,
-                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+            Expanded(
+              child: Text(
+                'Search all...',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isActive ? Colors.white : AppColors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                ),
               ),
             ),
           ],

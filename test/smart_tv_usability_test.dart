@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:filimu_plus/core/theme/app_colors.dart';
 import 'package:filimu_plus/core/theme/app_theme.dart';
 import 'package:filimu_plus/features/content_details/domain/device_form_factor.dart';
+import 'package:filimu_plus/shared/widgets/platform_navigation_shell.dart';
 import 'package:filimu_plus/shared/widgets/tv_focusable.dart';
 import 'package:filimu_plus/shared/widgets/tv_on_screen_keyboard.dart';
 import 'package:filimu_plus/shared/widgets/tv_text_field.dart';
@@ -246,6 +248,49 @@ void main() {
       expect(triggerNode.hasFocus, isTrue);
 
       triggerNode.dispose();
+    });
+
+    testWidgets('PlatformNavigationShell bridges D-pad LEFT from Home content into TV Sidebar',
+        (tester) async {
+      DeviceFormFactor.forceTvMode.value = true;
+      final contentNode = FocusNode(debugLabel: 'FirstPoster');
+
+      await tester.pumpWidget(
+        ProviderScope(
+          child: MaterialApp(
+            theme: AppTheme.darkTheme,
+            home: PlatformNavigationShell(
+              currentRoute: '/home',
+              child: Center(
+                child: TvFocusable(
+                  focusNode: contentNode,
+                  onPressed: () {},
+                  child: const Text('Home Poster 1'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      // Start focused inside Home content
+      contentNode.requestFocus();
+      await tester.pumpAndSettle();
+      expect(contentNode.hasFocus, isTrue);
+
+      // Press D-pad LEFT at left edge of Home content -> MUST jump into Sidebar!
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pumpAndSettle();
+      expect(contentNode.hasFocus, isFalse);
+
+      // Press D-pad RIGHT from Sidebar -> MUST return into Home content!
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pumpAndSettle();
+      expect(contentNode.hasFocus, isTrue);
+
+      contentNode.dispose();
     });
   });
 }
