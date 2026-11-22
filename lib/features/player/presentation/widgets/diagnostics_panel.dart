@@ -50,13 +50,17 @@ class _PlaybackDiagnosticsPanelState
 
     return Container(
       width: panelWidth,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.78,
+      ),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: const Color(0xFF0F0F14).withValues(alpha: 0.97),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
       ),
-      child: Column(
+      child: SingleChildScrollView(
+        child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -364,9 +368,152 @@ class _PlaybackDiagnosticsPanelState
               label: 'Stream Type',
               value: _detectStreamType(playerState.currentItem!.streamUrl!),
             ),
+          ..._buildTissSection(ref),
         ],
       ),
+      ),
     );
+  }
+
+  List<Widget> _buildTissSection(WidgetRef ref) {
+    final controller = ref.read(playerControllerProvider.notifier);
+    final tiss = controller.tissController;
+    final snap = tiss.diagnosticsSnapshot();
+    final channel = tiss.activeChannel;
+
+    return [
+      const SizedBox(height: 10),
+      const Divider(color: Colors.white12, height: 1),
+      const SizedBox(height: 10),
+      const Row(
+        children: [
+          Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
+          SizedBox(width: 6),
+          Text(
+            'TISS Stream Failover',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+      const SizedBox(height: 8),
+      if (snap.logicalChannelName != null)
+        _DiagRow(
+          icon: Icons.tv_rounded,
+          label: 'Logical Channel',
+          value: snap.logicalChannelName!,
+        ),
+      if (snap.activeStreamRedactedId != null)
+        _DiagRow(
+          icon: Icons.shield_outlined,
+          label: 'Active Stream',
+          value: snap.activeStreamRedactedId!,
+        ),
+      if (channel != null && channel.alternatives.length > 1)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: [
+              const Icon(Icons.high_quality_rounded,
+                  color: Colors.white38, size: 15),
+              const SizedBox(width: 8),
+              const Text(
+                'Channel Quality',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              const Spacer(),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: snap.isAutoMode
+                      ? '__auto__'
+                      : (tiss.activeStream?.streamId ?? '__auto__'),
+                  dropdownColor: const Color(0xFF202027),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  items: [
+                    const DropdownMenuItem(
+                      value: '__auto__',
+                      child: Text('Auto (TISS)'),
+                    ),
+                    ...channel.alternatives.map(
+                      (alt) => DropdownMenuItem(
+                        value: alt.streamId,
+                        child: Text(alt.qualityMenuLabel),
+                      ),
+                    ),
+                  ],
+                  onChanged: (val) {
+                    if (val == null || val == '__auto__') {
+                      controller.selectTissQuality(null);
+                    } else {
+                      final target = channel.alternatives
+                          .firstWhere((a) => a.streamId == val);
+                      controller.selectTissQuality(target);
+                    }
+                    _refresh();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      if (snap.availableQualities.isNotEmpty)
+        _DiagRow(
+          icon: Icons.layers_outlined,
+          label: 'Alternatives',
+          value: snap.availableQualities.join(', '),
+        ),
+      if (snap.failedQualities.isNotEmpty)
+        _DiagRow(
+          icon: Icons.warning_amber_rounded,
+          label: 'Failed Alts',
+          value: snap.failedQualities.join(', '),
+          valueColor: Colors.orangeAccent,
+        ),
+      if (snap.lastFailoverEvent != null)
+        _DiagRow(
+          icon: Icons.swap_calls_rounded,
+          label: 'Last Failover',
+          value: snap.lastFailoverEvent!.summary,
+        ),
+      _DiagRow(
+        icon: Icons.verified_outlined,
+        label: 'TISS Recoveries',
+        value: '${snap.successfulRecoveries}',
+        valueColor:
+            snap.successfulRecoveries > 0 ? Colors.greenAccent : Colors.white70,
+      ),
+      SwitchListTile.adaptive(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        activeThumbColor: AppColors.primary,
+        title: const Text(
+          'Auto Quality Upgrade',
+          style: TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+        value: snap.autoUpgradeEnabled,
+        onChanged: (v) {
+          controller.toggleTissAutoUpgrade(v);
+          setState(() {});
+        },
+      ),
+      SwitchListTile.adaptive(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        activeThumbColor: Colors.orangeAccent,
+        title: const Text(
+          'Simulate Poor Network (Dev)',
+          style: TextStyle(color: Colors.white54, fontSize: 11.5),
+        ),
+        value: snap.simulatePoorNetwork,
+        onChanged: (v) {
+          controller.toggleTissSimulatePoorNetwork(v);
+          setState(() {});
+        },
+      ),
+    ];
   }
 
   bool _isHWDecoder(String? decoder) {

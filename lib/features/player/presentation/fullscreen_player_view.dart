@@ -483,20 +483,70 @@ class _FullscreenPlayerViewState extends ConsumerState<FullscreenPlayerView> {
                     ),
                   ),
 
+                // --- Subtle TISS Quality / Failover Notification Pill ---
+                if (playerState.tissNotification != null)
+                  Positioned(
+                    top: 68,
+                    left: 24,
+                    right: 24,
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 9,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF14141C)
+                                .withValues(alpha: 0.9),
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(
+                              color: AppColors.primary.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.auto_awesome_rounded,
+                                color: AppColors.primary,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  playerState.tissNotification!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
                 // --- Buffering Indicator ---
                 if (playerState.isBuffering && playerState.errorMessage == null)
-                  const Center(
+                  Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        CircularProgressIndicator(
+                        const CircularProgressIndicator(
                           color: AppColors.primary,
                           strokeWidth: 3,
                         ),
-                        SizedBox(height: 14),
+                        const SizedBox(height: 14),
                         Text(
-                          'Connecting & buffering stream...',
-                          style: TextStyle(color: Colors.white70, fontSize: 13),
+                          playerState.playbackState.displayLabel,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 13),
                         ),
                       ],
                     ),

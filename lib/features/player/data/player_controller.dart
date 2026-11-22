@@ -16,6 +16,9 @@ import '../domain/playback_enums.dart';
 import '../streaming/stream_validator.dart';
 import '../streaming/streaming_manager.dart';
 import '../streaming/streaming_models.dart';
+import '../tiss/channel_grouping_engine.dart';
+import '../tiss/tiss_controller.dart';
+import '../tiss/tiss_models.dart';
 import 'libvlc_bridge.dart';
 
 // ─── Rich Player State ────────────────────────────────────────────────────────
@@ -48,6 +51,7 @@ class PlayerState {
   final List<LibVlcTrack> vlcSubtitleTracks;
   final int activeVlcAudioTrack;
   final int activeVlcSubtitleTrack;
+  final String? tissNotification;
 
   const PlayerState({
     this.currentItem,
@@ -77,6 +81,7 @@ class PlayerState {
     this.vlcSubtitleTracks = const [],
     this.activeVlcAudioTrack = -1,
     this.activeVlcSubtitleTrack = -1,
+    this.tissNotification,
   });
 
   PlayerState copyWith({
@@ -109,6 +114,8 @@ class PlayerState {
     List<LibVlcTrack>? vlcSubtitleTracks,
     int? activeVlcAudioTrack,
     int? activeVlcSubtitleTrack,
+    String? tissNotification,
+    bool clearTissNotification = false,
   }) {
     return PlayerState(
       currentItem: currentItem ?? this.currentItem,
@@ -141,6 +148,9 @@ class PlayerState {
       activeVlcAudioTrack: activeVlcAudioTrack ?? this.activeVlcAudioTrack,
       activeVlcSubtitleTrack:
           activeVlcSubtitleTrack ?? this.activeVlcSubtitleTrack,
+      tissNotification: clearTissNotification
+          ? null
+          : (tissNotification ?? this.tissNotification),
     );
   }
 }
@@ -157,12 +167,15 @@ class PlayerController extends StateNotifier<PlayerState>
   final SecureStorageService _storage;
   final StalkerClient? _stalkerClient;
   final StreamingManager streamingManager;
+  final TissController tissController = TissController();
   final Map<String, StalkerCredentials> _stalkerCredsCache = {};
 
-  // Cached HTTP headers & live channel list for fast (<2s) channel switching
+  // Cached HTTP headers, live channel list & TISS logical channel lookup
   Map<String, String>? _cachedHeaders;
   String? _cachedLivePlaylistId;
   List<ContentItemsTableData> _cachedLiveChannels = const [];
+  Map<String, LogicalChannel> _logicalByProviderId = const {};
+  Timer? _tissNotificationTimer;
 
   bool get _usingLibVlc =>
       state.playbackEngine == PlaybackEngine.libVlc && LibVlcBridge.isSupported;
@@ -261,6 +274,16 @@ class PlayerController extends StateNotifier<PlayerState>
           _hasRenderedFirstFrame = true;
           streamingManager.analytics.recordFirstFrame();
         }
+        final wasTissFailover = tissController.lastFailoverEvent != null &&
+            !tissController.lastFailoverEvent!.succeeded;
+        tissController.confirmPlayback(
+          startupMs: streamingManager.analytics.snapshot().lastStartupMs,
+          width: player.state.width,
+          height: player.state.height,
+        );
+        if (wasTissFailover) {
+          _showTissNotification('Playback restored.');
+        }
         if (_isRecovering || _reconnectAttempt > 0) {
           _isRecovering = false;
           _reconnectAttempt = 0;
@@ -282,6 +305,11 @@ class PlayerController extends StateNotifier<PlayerState>
       );
       if (buffering) {
         _bufferingSince ??= DateTime.now();
+        if (_hasRenderedFirstFrame &&
+            tissController.recordRebufferAndShouldFailover()) {
+          unawaited(_triggerTissFailover(reason: 'sustained_buffering'));
+          return;
+        }
         state = state.copyWith(
           isBuffering: true,
           playbackState: PlaybackState.buffering,
@@ -345,6 +373,18 @@ class PlayerController extends StateNotifier<PlayerState>
       debugPrint('[Tamba Player] Error (${failureKind.name}): ${_friendlyError(err)}');
 
       final item = state.currentItem;
+      if (item?.type == MediaType.live &&
+          tissController.hasAlternatives &&
+          !_isRecovering) {
+        final isExpired =
+            failureKind == StreamFailureKind.expiredOrUnauthorized;
+        unawaited(_triggerTissFailover(
+          reason: failureKind.name,
+          isExpired: isExpired,
+        ));
+        return;
+      }
+
       final isRecoverable = failureKind == StreamFailureKind.networkError ||
           (item?.type == MediaType.live &&
               failureKind == StreamFailureKind.streamUnavailable);
@@ -495,6 +535,23 @@ class PlayerController extends StateNotifier<PlayerState>
         return;
       }
 
+      // 3. TISS QualityRecoveryController: check for controlled quality upgrade
+      if (item.type == MediaType.live && tissController.hasAlternatives) {
+        final upgradeTarget = tissController.evaluateQualityUpgrade(
+          throughputKbps:
+              streamingManager.analytics.snapshot().estimatedThroughputKbps,
+          bufferDuration: state.bufferDuration,
+        );
+        if (upgradeTarget != null) {
+          unawaited(_commitTissSwitch(
+            upgradeTarget,
+            notification:
+                'Connection improved. Returning to ${upgradeTarget.displayQuality}.',
+          ));
+          return;
+        }
+      }
+
       if (_lastObservedPosition == null ||
           currentPosition != _lastObservedPosition) {
         _lastObservedPosition = currentPosition;
@@ -505,7 +562,11 @@ class PlayerController extends StateNotifier<PlayerState>
       _stalledSeconds += 3;
       if (_stalledSeconds >= cfg.stallTimeoutSecs) {
         _stalledSeconds = 0;
-        _scheduleReconnect(reason: 'playback_stalled');
+        if (item.type == MediaType.live && tissController.hasAlternatives) {
+          unawaited(_triggerTissFailover(reason: 'playback_stalled'));
+        } else {
+          _scheduleReconnect(reason: 'playback_stalled');
+        }
       }
     });
   }
@@ -1018,6 +1079,155 @@ class PlayerController extends StateNotifier<PlayerState>
     return _playbackUrlFor(item);
   }
 
+  // ─── TISS (Tamba Intelligent Stream Switching) ───────────────────────────
+
+  void _showTissNotification(String message) {
+    _tissNotificationTimer?.cancel();
+    state = state.copyWith(tissNotification: message);
+    _tissNotificationTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) {
+        state = state.copyWith(clearTissNotification: true);
+      }
+    });
+  }
+
+  Future<void> _attachTissForLiveItem(MediaItem item) async {
+    if (item.type != MediaType.live ||
+        item.playlistId == null ||
+        item.providerId == null) {
+      tissController.detach();
+      return;
+    }
+    try {
+      await _getLiveChannelsForZapping(item.playlistId!);
+      final logical = _logicalByProviderId[item.providerId!];
+      if (logical != null) {
+        final matchingAlt = logical.alternatives.firstWhere(
+          (a) => a.providerId == item.providerId,
+          orElse: () => logical.primaryStream,
+        );
+        tissController.attachLogicalChannel(
+          logical,
+          initialStream: matchingAlt,
+          autoMode: true,
+        );
+      } else {
+        tissController.detach();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _triggerTissFailover({
+    required String reason,
+    bool isExpired = false,
+  }) async {
+    if (_isRecovering) return;
+    final throughput =
+        streamingManager.analytics.snapshot().estimatedThroughputKbps;
+    final nextAlt = tissController.selectFailoverAlternative(
+      reason: reason,
+      throughputKbps: throughput,
+      isExpired: isExpired,
+    );
+    if (nextAlt == null) {
+      _showTissNotification(
+        'All available stream alternatives are currently unavailable.',
+      );
+      _scheduleReconnect(reason: reason);
+      return;
+    }
+
+    await _commitTissSwitch(
+      nextAlt,
+      notification:
+          'Network unstable. Switching to ${nextAlt.displayQuality}.',
+    );
+  }
+
+  Future<void> _commitTissSwitch(
+    StreamAlternative target, {
+    String? notification,
+  }) async {
+    final current = state.currentItem;
+    if (current == null) return;
+
+    _isRecovering = true;
+    _cancelReconnectTimer();
+    _isRecovering = true;
+    if (notification != null) {
+      _showTissNotification(notification);
+    }
+
+    // Preserve logical channel display name, logo, and EPG metadata
+    final switchedItem = current.copyWith(
+      streamUrl: target.streamUrl,
+      providerId: target.providerId,
+    );
+
+    try {
+      final headers = await _getHttpHeaders();
+      final resolvedUrl = await _resolvePlaybackUrl(switchedItem);
+      _currentOpenUrl = target.streamUrl;
+      _hasRenderedFirstFrame = false;
+      _bufferingSince = DateTime.now();
+
+      state = state.copyWith(
+        currentItem: switchedItem,
+        playbackState: PlaybackState.loading,
+        isBuffering: true,
+        clearError: true,
+      );
+
+      if (_usingLibVlc) {
+        await libVlcBridge.open(url: resolvedUrl, headers: headers);
+      } else {
+        await player.open(
+          Media(resolvedUrl, httpHeaders: headers),
+          play: true,
+        );
+      }
+    } catch (_) {
+      _isRecovering = false;
+      await _triggerTissFailover(reason: 'alternative_failed');
+      return;
+    }
+    _isRecovering = false;
+  }
+
+  /// Manual TISS quality selection (`null` = Auto mode).
+  Future<void> selectTissQuality(StreamAlternative? alt) async {
+    final chosen = tissController.setManualQuality(alt);
+    if (alt == null) {
+      _showTissNotification('Quality set to Auto.');
+      state = state.copyWith();
+      return;
+    }
+    if (chosen != null) {
+      await _commitTissSwitch(
+        chosen,
+        notification: 'Switched to ${chosen.displayQuality}.',
+      );
+    }
+  }
+
+  void toggleTissAutoUpgrade(bool enabled) {
+    tissController.updateConfig(
+      tissController.config.copyWith(autoUpgradeEnabled: enabled),
+    );
+    state = state.copyWith();
+  }
+
+  void toggleTissSimulatePoorNetwork(bool enabled) {
+    tissController.updateConfig(
+      tissController.config.copyWith(simulatePoorNetwork: enabled),
+    );
+    if (enabled && tissController.hasAlternatives) {
+      unawaited(_triggerTissFailover(reason: 'simulated_poor_network'));
+    } else {
+      state = state.copyWith();
+    }
+  }
+
   // ─── Core Playback ───────────────────────────────────────────────────────
 
   Future<void> playItem(
@@ -1075,6 +1285,11 @@ class PlayerController extends StateNotifier<PlayerState>
     }
 
     try {
+      if (item.type == MediaType.live) {
+        await _attachTissForLiveItem(item);
+      } else {
+        tissController.detach();
+      }
       final headers = await _getHttpHeaders();
       final resolvedUrl = await _resolvePlaybackUrl(item);
 
@@ -1191,6 +1406,14 @@ class PlayerController extends StateNotifier<PlayerState>
         .get();
     _cachedLivePlaylistId = playlistId;
     _cachedLiveChannels = channels;
+    final grouped = ChannelGroupingEngine.groupChannels(channels);
+    final lookup = <String, LogicalChannel>{};
+    for (final logical in grouped) {
+      for (final alt in logical.alternatives) {
+        lookup[alt.providerId] = logical;
+      }
+    }
+    _logicalByProviderId = lookup;
     return channels;
   }
 
@@ -1584,6 +1807,7 @@ class PlayerController extends StateNotifier<PlayerState>
     WidgetsBinding.instance.removeObserver(this);
     _positionSaveTimer?.cancel();
     _stallDetectionTimer?.cancel();
+    _tissNotificationTimer?.cancel();
     _cancelReconnectTimer();
     unawaited(_saveCurrentPosition());
     for (final sub in _subscriptions) {
