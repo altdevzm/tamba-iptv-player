@@ -66,6 +66,28 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Configure Gradle Maven Central fallback
+        run: |
+          mkdir -p "$HOME/.gradle/init.d"
+          cat > "$HOME/.gradle/init.d/repos.gradle" <<'EOF'
+          beforeSettings { settings ->
+            settings.pluginManagement.repositories {
+              google()
+              mavenCentral()
+              gradlePluginPortal()
+            }
+          }
+          allprojects {
+            buildscript {
+              repositories {
+                google()
+                mavenCentral()
+                gradlePluginPortal()
+              }
+            }
+          }
+          EOF
+
       - name: Build APK
         run: flutter build apk --release --no-pub
 
