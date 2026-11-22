@@ -119,6 +119,7 @@ List<ParsedChannel> _parseM3uSync(String content) {
 
     // ── URL line ─────────────────────────────────────────────────────────────
     // A non-comment, non-empty line after an #EXTINF is the stream URL.
+    // Also support bare stream URLs in simple M3U playlists without #EXTINF.
     if (pendingExtinf != null) {
       final channel = _buildChannel(
         extinf: pendingExtinf,
@@ -128,6 +129,29 @@ List<ParsedChannel> _parseM3uSync(String content) {
         extGrp: pendingExtGrp,
       );
       if (channel != null) results.add(channel);
+    } else if (raw.startsWith('http://') ||
+        raw.startsWith('https://') ||
+        raw.startsWith('rtsp://') ||
+        raw.startsWith('rtmp://')) {
+      final streamUrl = _extractStreamUrl(raw);
+      if (streamUrl.isNotEmpty) {
+        final uri = Uri.tryParse(streamUrl);
+        final fallbackTitle = (uri != null && uri.pathSegments.isNotEmpty)
+            ? uri.pathSegments.last
+            : 'Channel ${results.length + 1}';
+        results.add(
+          ParsedChannel(
+            title: fallbackTitle,
+            groupTitle: _emptyToNull(pendingExtGrp),
+            streamUrl: streamUrl,
+            streamHeaders: {
+              ...vlcHeaders,
+              ..._extractPipeHeaders(raw),
+            },
+            kodiProps: Map<String, String>.from(kodiProps),
+          ),
+        );
+      }
     }
 
     // Reset state for next entry regardless of whether we got a valid channel.

@@ -141,42 +141,46 @@ class _SettingsViewState extends ConsumerState<SettingsView> {
             GlassContainer(
               padding: EdgeInsets.all(isMobile ? 16 : 24),
               borderRadius: 16,
-              child: ValueListenableBuilder<bool>(
-                valueListenable: DeviceFormFactor.forceTvMode,
-                builder: (context, forcedTv, _) {
-                  return SwitchListTile.adaptive(
-                    contentPadding: EdgeInsets.zero,
-                    activeThumbColor: AppColors.primary,
-                    activeTrackColor: AppColors.primary.withValues(alpha: 0.4),
-                    title: const Text(
-                      'Force Smart TV Mode',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w700,
+              child: Material(
+                type: MaterialType.transparency,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: DeviceFormFactor.forceTvMode,
+                  builder: (context, forcedTv, _) {
+                    return SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      activeThumbColor: AppColors.primary,
+                      activeTrackColor:
+                          AppColors.primary.withValues(alpha: 0.4),
+                      title: const Text(
+                        'Force Smart TV Mode',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                    ),
-                    subtitle: Text(
-                      'Use the 10-foot TV sidebar, D-pad focus navigation, and full-screen TV details. Ideal for uncertified Android TV boxes or tablets.',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.55),
-                        fontSize: 12,
+                      subtitle: Text(
+                        'Use the 10-foot TV sidebar, D-pad focus navigation, and full-screen TV details. Ideal for uncertified Android TV boxes or tablets.',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.55),
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                    value: forcedTv,
-                    onChanged: (enabled) async {
-                      DeviceFormFactor.forceTvMode.value = enabled;
-                      try {
-                        await ref
-                            .read(secureStorageProvider)
-                            .savePlaylistCredentials(
-                              'filimu_force_tv_mode',
-                              enabled ? 'true' : 'false',
-                            );
-                      } catch (_) {}
-                    },
-                  );
-                },
+                      value: forcedTv,
+                      onChanged: (enabled) async {
+                        DeviceFormFactor.forceTvMode.value = enabled;
+                        try {
+                          await ref
+                              .read(secureStorageProvider)
+                              .savePlaylistCredentials(
+                                'filimu_force_tv_mode',
+                                enabled ? 'true' : 'false',
+                              );
+                        } catch (_) {}
+                      },
+                    );
+                  },
+                ),
               ),
             ),
             const SizedBox(height: 32),

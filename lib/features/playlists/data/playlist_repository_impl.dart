@@ -79,8 +79,11 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
     return trimmed;
   }
 
-  /// Downloads the raw M3U text from [url] via Dio with IPTV-compatible headers,
-  /// gzip compression, live MB progress updates, and extended timeouts.
+  /// Downloads the raw M3U text from [url] via Dio as raw bytes so:
+  /// - Dart's HttpClient handles HTTP gzip automatically (never setting a
+  ///   manual Accept-Encoding header that disables autoUncompress),
+  /// - `.m3u.gz` files are transparently decompressed via magic bytes, and
+  /// - non-UTF-8 (Latin-1 / Windows-1252) channel names never crash decoding.
   Future<String> _downloadM3u(
     String url, {
     void Function(String status)? onProgress,
@@ -93,10 +96,10 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
     var lastProgressMs = 0;
 
     try {
-      final response = await _apiClient.dio.get<dynamic>(
+      final response = await _apiClient.dio.get<List<int>>(
         normalized,
         options: Options(
-          responseType: ResponseType.plain,
+          responseType: ResponseType.bytes,
           receiveTimeout: const Duration(minutes: 3),
           sendTimeout: const Duration(seconds: 30),
           followRedirects: true,
@@ -104,7 +107,6 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
           headers: const {
             'User-Agent': 'VLC/3.0.18 LibVLC/3.0.18',
             'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate',
           },
         ),
         onReceiveProgress: (received, total) {
@@ -129,8 +131,17 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
         );
       }
 
-      final data = response.data;
-      final text = data is String ? data : (data?.toString() ?? '');
+      var bytes = response.data ?? const <int>[];
+      if (bytes.isEmpty) {
+        throw Exception('The server returned an empty M3U playlist.');
+      }
+
+      // Transparently decompress raw gzip payloads (magic bytes 0x1F 0x8B)
+      if (bytes.length >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B) {
+        bytes = gzip.decode(bytes);
+      }
+
+      final text = utf8.decode(bytes, allowMalformed: true);
       if (text.trim().isEmpty) {
         throw Exception('The server returned an empty M3U playlist.');
       }
@@ -224,7 +235,8 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
             (entry) => CategoriesTableCompanion.insert(
               playlistId: playlistId,
               name: entry.$2,
-              type: entry.$1,
+              // CategoriesTable uses 'live' and 'movies' (matching Xtream/Stalker)
+              type: entry.$1 == 'movie' ? 'movies' : entry.$1,
               providerId: entry.$2,
             ),
           )
@@ -239,7 +251,7 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
 
       // Reload categories so we can resolve (type, group-name) → DB row ID.
       final liveCategories = await _db.getCategories(playlistId, 'live');
-      final movieCategories = await _db.getCategories(playlistId, 'movie');
+      final movieCategories = await _db.getCategories(playlistId, 'movies');
       final categoryIdByKey = <String, int>{
         for (final cat in liveCategories) 'live::${cat.name}': cat.id,
         for (final cat in movieCategories) 'movie::${cat.name}': cat.id,
