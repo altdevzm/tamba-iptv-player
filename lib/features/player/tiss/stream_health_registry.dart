@@ -105,6 +105,7 @@ class StreamHealthRegistry {
       verifiedWidth: info.width,
       verifiedHeight: info.height,
       isQualityVerified: true,
+      qualitySource: QualitySource.playbackReported,
       tier: verifiedTier,
       displayQuality: verifiedTier.shortLabel,
       codec: info.codec ?? alt.codec,

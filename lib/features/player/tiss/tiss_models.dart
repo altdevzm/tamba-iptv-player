@@ -1,4 +1,62 @@
-/// Ordered quality tiers supported by Tamba Intelligent Stream Switching (TISS).
+/// SmartStream playback modes that directly control quality selection,
+/// bandwidth safety margins, failover thresholds, and automatic recovery.
+enum SmartStreamMode {
+  balanced,
+  bestQuality,
+  mostStable,
+}
+
+extension SmartStreamModeInfo on SmartStreamMode {
+  String get label => switch (this) {
+        SmartStreamMode.balanced => 'Balanced',
+        SmartStreamMode.bestQuality => 'Best Quality',
+        SmartStreamMode.mostStable => 'Most Stable',
+      };
+
+  String get description => switch (this) {
+        SmartStreamMode.balanced =>
+          'Selects best sustainable quality, fails over on buffering, and restores quality when stable.',
+        SmartStreamMode.bestQuality =>
+          'Prioritizes highest available resolution while still protecting against sustained buffering.',
+        SmartStreamMode.mostStable =>
+          'Prefers lower-bitrate streams with conservative margins and avoids unnecessary upgrades.',
+      };
+
+  double get bandwidthSafetyMargin => switch (this) {
+        SmartStreamMode.balanced => 0.80,
+        SmartStreamMode.bestQuality => 0.92,
+        SmartStreamMode.mostStable => 0.65,
+      };
+
+  int get rebufferThreshold => switch (this) {
+        SmartStreamMode.balanced => 2,
+        SmartStreamMode.bestQuality => 3,
+        SmartStreamMode.mostStable => 1,
+      };
+
+  bool get defaultAutoUpgrade => switch (this) {
+        SmartStreamMode.balanced => true,
+        SmartStreamMode.bestQuality => true,
+        SmartStreamMode.mostStable => false,
+      };
+}
+
+/// Distinguishes where a stream's quality metadata originated.
+enum QualitySource {
+  providerLabel,
+  manifestDeclared,
+  playbackReported,
+}
+
+extension QualitySourceLabel on QualitySource {
+  String get label => switch (this) {
+        QualitySource.providerLabel => 'Provider label',
+        QualitySource.manifestDeclared => 'Manifest',
+        QualitySource.playbackReported => 'Verified playback',
+      };
+}
+
+/// Ordered quality tiers supported by Tamba SmartStream / TISS.
 enum StreamQualityTier {
   uhd4k,
   qhd1440,
@@ -71,6 +129,7 @@ class StreamAlternative {
   final int? verifiedWidth;
   final int? verifiedHeight;
   final bool isQualityVerified;
+  final QualitySource qualitySource;
   final int estimatedBitrateKbps;
   final String? codec;
   final String? regionTag;
@@ -90,6 +149,7 @@ class StreamAlternative {
     this.verifiedWidth,
     this.verifiedHeight,
     this.isQualityVerified = false,
+    this.qualitySource = QualitySource.providerLabel,
     required this.estimatedBitrateKbps,
     this.codec,
     this.regionTag,
@@ -99,16 +159,21 @@ class StreamAlternative {
   });
 
   String get qualityMenuLabel {
-    if (isQualityVerified && verifiedHeight != null) {
+    if (qualitySource == QualitySource.playbackReported &&
+        verifiedHeight != null) {
       return '${verifiedHeight}p';
     }
-    return isQualityVerified ? displayQuality : '$displayQuality (est.)';
+    if (qualitySource == QualitySource.manifestDeclared) {
+      return displayQuality;
+    }
+    return '$displayQuality (est.)';
   }
 
   StreamAlternative copyWith({
     int? verifiedWidth,
     int? verifiedHeight,
     bool? isQualityVerified,
+    QualitySource? qualitySource,
     StreamQualityTier? tier,
     String? displayQuality,
     int? estimatedBitrateKbps,
@@ -127,6 +192,7 @@ class StreamAlternative {
       verifiedWidth: verifiedWidth ?? this.verifiedWidth,
       verifiedHeight: verifiedHeight ?? this.verifiedHeight,
       isQualityVerified: isQualityVerified ?? this.isQualityVerified,
+      qualitySource: qualitySource ?? this.qualitySource,
       estimatedBitrateKbps: estimatedBitrateKbps ?? this.estimatedBitrateKbps,
       codec: codec ?? this.codec,
       regionTag: regionTag,
@@ -284,8 +350,9 @@ class TissFailoverEvent {
       '${wasUpgrade ? "Upgrade" : "Failover"} $fromQuality → $toQuality ($reason, ${recoveryDurationMs}ms)';
 }
 
-/// Configurable thresholds for TISS failover & quality recovery.
+/// Configurable thresholds for SmartStream / TISS failover & quality recovery.
 class TissConfig {
+  final SmartStreamMode mode;
   final int rebufferThreshold;
   final int detectionWindowSeconds;
   final int stabilityPeriodSeconds;
@@ -294,9 +361,11 @@ class TissConfig {
   final int failureCooldownSeconds;
   final int expiredCooldownSeconds;
   final bool autoUpgradeEnabled;
+  final bool allowEmergencyFallbackInManualMode;
   final bool simulatePoorNetwork;
 
   const TissConfig({
+    this.mode = SmartStreamMode.balanced,
     this.rebufferThreshold = 2,
     this.detectionWindowSeconds = 20,
     this.stabilityPeriodSeconds = 45,
@@ -305,10 +374,26 @@ class TissConfig {
     this.failureCooldownSeconds = 90,
     this.expiredCooldownSeconds = 600,
     this.autoUpgradeEnabled = true,
+    this.allowEmergencyFallbackInManualMode = true,
     this.simulatePoorNetwork = false,
   });
 
+  factory TissConfig.forMode(
+    SmartStreamMode mode, {
+    bool? autoUpgradeEnabled,
+    bool allowEmergencyFallbackInManualMode = true,
+  }) {
+    return TissConfig(
+      mode: mode,
+      rebufferThreshold: mode.rebufferThreshold,
+      bandwidthSafetyMargin: mode.bandwidthSafetyMargin,
+      autoUpgradeEnabled: autoUpgradeEnabled ?? mode.defaultAutoUpgrade,
+      allowEmergencyFallbackInManualMode: allowEmergencyFallbackInManualMode,
+    );
+  }
+
   TissConfig copyWith({
+    SmartStreamMode? mode,
     int? rebufferThreshold,
     int? detectionWindowSeconds,
     int? stabilityPeriodSeconds,
@@ -317,9 +402,11 @@ class TissConfig {
     int? failureCooldownSeconds,
     int? expiredCooldownSeconds,
     bool? autoUpgradeEnabled,
+    bool? allowEmergencyFallbackInManualMode,
     bool? simulatePoorNetwork,
   }) {
     return TissConfig(
+      mode: mode ?? this.mode,
       rebufferThreshold: rebufferThreshold ?? this.rebufferThreshold,
       detectionWindowSeconds:
           detectionWindowSeconds ?? this.detectionWindowSeconds,
@@ -334,6 +421,8 @@ class TissConfig {
       expiredCooldownSeconds:
           expiredCooldownSeconds ?? this.expiredCooldownSeconds,
       autoUpgradeEnabled: autoUpgradeEnabled ?? this.autoUpgradeEnabled,
+      allowEmergencyFallbackInManualMode: allowEmergencyFallbackInManualMode ??
+          this.allowEmergencyFallbackInManualMode,
       simulatePoorNetwork: simulatePoorNetwork ?? this.simulatePoorNetwork,
     );
   }

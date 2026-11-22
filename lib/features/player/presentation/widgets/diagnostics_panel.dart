@@ -4,6 +4,7 @@ import '../../../../core/theme/app_colors.dart';
 import '../../data/player_controller.dart';
 import '../../domain/playback_enums.dart';
 import '../../streaming/streaming_models.dart';
+import '../../tiss/tiss_models.dart';
 
 /// Technical diagnostics panel accessible from the player controls.
 /// Shows decoder type, HW acceleration, resolution, bitrate, buffer, etc.
@@ -390,7 +391,7 @@ class _PlaybackDiagnosticsPanelState
           Icon(Icons.auto_awesome_rounded, color: AppColors.primary, size: 15),
           SizedBox(width: 6),
           Text(
-            'TISS Stream Failover',
+            'Tamba SmartStream (TISS)',
             style: TextStyle(
               color: Colors.white,
               fontSize: 12.5,
@@ -400,6 +401,42 @@ class _PlaybackDiagnosticsPanelState
         ],
       ),
       const SizedBox(height: 8),
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            const Icon(Icons.auto_mode_rounded,
+                color: Colors.white38, size: 15),
+            const SizedBox(width: 8),
+            const Text(
+              'SmartStream Mode',
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const Spacer(),
+            DropdownButtonHideUnderline(
+              child: DropdownButton<SmartStreamMode>(
+                value: controller.smartStreamMode,
+                dropdownColor: const Color(0xFF202027),
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+                items: SmartStreamMode.values
+                    .map(
+                      (m) => DropdownMenuItem(
+                        value: m,
+                        child: Text(m.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (mode) {
+                  if (mode != null) {
+                    controller.setSmartStreamMode(mode);
+                    setState(() {});
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
       if (snap.logicalChannelName != null)
         _DiagRow(
           icon: Icons.tv_rounded,

@@ -185,6 +185,7 @@ class PlayerController extends StateNotifier<PlayerState>
   Timer? _stallDetectionTimer;
   late final Future<void> _preferencesLoaded;
   int _reconnectAttempt = 0;
+  int _playbackEpoch = 0;
   bool _isRecovering = false;
   bool _hasRenderedFirstFrame = false;
   DateTime? _bufferingSince;
@@ -227,7 +228,13 @@ class PlayerController extends StateNotifier<PlayerState>
         _storage.getPlaylistCredentials('filimu_live_stream_format'),
         _storage.getPlaylistCredentials('filimu_playback_profile'),
         _storage.getPlaylistCredentials('filimu_playback_engine'),
+        _storage.getPlaylistCredentials('filimu_smartstream_mode'),
       ]);
+      final savedSmartMode = SmartStreamMode.values.firstWhere(
+        (m) => m.name == values[4],
+        orElse: () => SmartStreamMode.balanced,
+      );
+      tissController.setMode(savedSmartMode);
       final formatValue = values[1];
       final format = LiveStreamFormat.values.firstWhere(
         (value) => value.name == formatValue,
@@ -1150,6 +1157,7 @@ class PlayerController extends StateNotifier<PlayerState>
   }) async {
     final current = state.currentItem;
     if (current == null) return;
+    final epoch = _playbackEpoch;
 
     _isRecovering = true;
     _cancelReconnectTimer();
@@ -1167,6 +1175,11 @@ class PlayerController extends StateNotifier<PlayerState>
     try {
       final headers = await _getHttpHeaders();
       final resolvedUrl = await _resolvePlaybackUrl(switchedItem);
+      // Abort cleanly if user switched channels while failover was preparing
+      if (epoch != _playbackEpoch) {
+        _isRecovering = false;
+        return;
+      }
       _currentOpenUrl = target.streamUrl;
       _hasRenderedFirstFrame = false;
       _bufferingSince = DateTime.now();
@@ -1210,6 +1223,26 @@ class PlayerController extends StateNotifier<PlayerState>
     }
   }
 
+  SmartStreamMode get smartStreamMode => tissController.config.mode;
+
+  Future<void> setSmartStreamMode(SmartStreamMode mode) async {
+    tissController.setMode(mode);
+    final mappedBuffer = switch (mode) {
+      SmartStreamMode.balanced => BufferProfile.balanced,
+      SmartStreamMode.bestQuality => BufferProfile.balanced,
+      SmartStreamMode.mostStable => BufferProfile.stable,
+    };
+    streamingManager.setBufferProfile(mappedBuffer);
+    try {
+      await _storage.savePlaylistCredentials(
+        'filimu_smartstream_mode',
+        mode.name,
+      );
+    } catch (_) {}
+    _showTissNotification('SmartStream: ${mode.label}');
+    state = state.copyWith();
+  }
+
   void toggleTissAutoUpgrade(bool enabled) {
     tissController.updateConfig(
       tissController.config.copyWith(autoUpgradeEnabled: enabled),
@@ -1236,6 +1269,7 @@ class PlayerController extends StateNotifier<PlayerState>
     bool isChannelSwitch = false,
   }) async {
     await _preferencesLoaded;
+    _playbackEpoch++;
     _cancelReconnectTimer();
     _reconnectAttempt = 0;
     _hasRenderedFirstFrame = false;

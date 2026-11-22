@@ -43,6 +43,40 @@ class TissController {
     _config = newConfig;
   }
 
+  /// Applies a [SmartStreamMode] (`balanced`, `bestQuality`, `mostStable`),
+  /// updating safety margins, rebuffer thresholds, and auto-upgrade behavior.
+  void setMode(SmartStreamMode mode) {
+    _config = TissConfig.forMode(
+      mode,
+      allowEmergencyFallbackInManualMode:
+          _config.allowEmergencyFallbackInManualMode,
+    ).copyWith(simulatePoorNetwork: _config.simulatePoorNetwork);
+  }
+
+  /// Selects the initial alternative for [channel] respecting the active
+  /// [SmartStreamMode]: `mostStable` prefers a conservative ≤720p stream,
+  /// `bestQuality` prefers the highest resolution, and `balanced` picks the
+  /// highest healthy stream.
+  StreamAlternative selectInitialStream(
+    LogicalChannel channel, {
+    DateTime? now,
+  }) {
+    final ts = now ?? DateTime.now();
+    final healthy = channel.alternatives
+        .map(healthRegistry.applyVerifiedQuality)
+        .where((a) => healthRegistry.isAvailable(a.streamId, now: ts))
+        .toList();
+    final pool = healthy.isNotEmpty ? healthy : channel.alternatives;
+
+    if (_config.mode == SmartStreamMode.mostStable) {
+      for (final alt in pool) {
+        if (alt.tier.rank <= StreamQualityTier.hd720.rank) return alt;
+      }
+      return pool.last;
+    }
+    return pool.first;
+  }
+
   /// Attaches a [LogicalChannel] when the user starts watching a channel.
   void attachLogicalChannel(
     LogicalChannel channel, {
@@ -52,7 +86,7 @@ class TissController {
   }) {
     final ts = now ?? DateTime.now();
     _activeChannel = channel;
-    final chosen = initialStream ?? channel.primaryStream;
+    final chosen = initialStream ?? selectInitialStream(channel, now: ts);
     _activeStream = healthRegistry.applyVerifiedQuality(chosen);
     _preferredStream = _activeStream;
     _isAutoMode = autoMode;
