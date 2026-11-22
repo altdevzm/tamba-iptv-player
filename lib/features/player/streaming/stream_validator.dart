@@ -119,49 +119,13 @@ class StreamValidator {
         );
       }
 
-      // For DASH or continuous TS/MP4 streams, do a fast HEAD probe.
-      final res = await _dio.head<dynamic>(
-        trimmed,
-        options: Options(
-          headers: headers,
-          sendTimeout: const Duration(milliseconds: 2500),
-          receiveTimeout: const Duration(milliseconds: 2500),
-          followRedirects: true,
-          maxRedirects: 5,
-          validateStatus: (status) => status != null && status < 600,
-        ),
-      );
-
-      final status = res.statusCode ?? 200;
-      // Many IPTV servers block HEAD (405/501) while GET streams play fine.
-      if (status == 405 || status == 501) {
-        return StreamValidationResult.valid(
-          httpStatusCode: status,
-          supportsAbr: isDash,
-        );
-      }
-
-      final statusError = _classifyHttpStatus(status);
-      if (statusError != null) return statusError;
-
-      final contentType = res.headers.value('content-type') ?? '';
-      if (contentType.toLowerCase().contains('text/html')) {
-        return StreamValidationResult.failed(
-          failureKind: StreamFailureKind.streamUnavailable,
-          userMessage: 'Stream source returned an HTML page instead of video.',
-          httpStatusCode: status,
-          contentType: contentType,
-        );
-      }
-
+      // Continuous MPEG-TS / VOD streams: many IPTV panels (including Xtream
+      // get.php) reject HTTP HEAD with 404/405 while GET playback works fine.
+      // Let the native player open the stream directly without a HEAD blocker.
       return StreamValidationResult.valid(
-        httpStatusCode: status,
-        contentType: contentType,
         supportsAbr: isDash,
       );
     } on DioException catch (e) {
-      // If a provider times out on HEAD, don't falsely block continuous TS streams;
-      // let the native player attempt streaming unless it's a clear DNS/network loss.
       if (e.type == DioExceptionType.connectionError) {
         return const StreamValidationResult.failed(
           failureKind: StreamFailureKind.networkError,

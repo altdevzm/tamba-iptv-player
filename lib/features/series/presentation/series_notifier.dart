@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' as drift;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/persistence/app_database.dart';
 import '../../../core/persistence/database_provider.dart';
@@ -140,7 +141,9 @@ final seriesCategoriesProvider =
       .watch();
 });
 
-/// Watches all series content items matching the active filter and search query
+/// Watches series content items matching the active filter and search query
+/// using SQLite-level filtering, sorting, and row limits to avoid OOM on
+/// massive IPTV playlists.
 final filteredSeriesProvider =
     StreamProvider.autoDispose<List<ContentItemsTableData>>((ref) {
   final db = ref.watch(databaseProvider);
@@ -158,42 +161,51 @@ final filteredSeriesProvider =
     query = query..where((t) => t.categoryId.equals(filter.selectedCategoryId!));
   }
 
-  return query.watch().map((items) {
-    var result = items;
+  final searchTerm = filter.searchQuery.trim();
+  if (searchTerm.isNotEmpty) {
+    query = query..where((t) => t.title.like('%$searchTerm%'));
+  }
 
-    // Search filter
-    if (filter.searchQuery.isNotEmpty) {
-      final term = filter.searchQuery.toLowerCase();
-      result = result.where((i) => i.title.toLowerCase().contains(term)).toList();
-    }
+  if (filter.filterYear != null) {
+    query = query..where((t) => t.releaseYear.equals(filter.filterYear!));
+  }
 
-    // Year filter
-    if (filter.filterYear != null) {
-      result = result.where((i) => i.releaseYear == filter.filterYear).toList();
-    }
+  if (filter.minRating != null) {
+    query = query
+      ..where((t) => t.rating.isBiggerOrEqualValue(filter.minRating!));
+  }
 
-    // Min rating filter
-    if (filter.minRating != null) {
-      result = result.where((i) => (i.rating ?? 0) >= filter.minRating!).toList();
-    }
+  switch (filter.sortBy) {
+    case SeriesSortOption.titleAZ:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.title)]);
+    case SeriesSortOption.titleZA:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.title, mode: drift.OrderingMode.desc)
+        ]);
+    case SeriesSortOption.ratingHigh:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.rating, mode: drift.OrderingMode.desc)
+        ]);
+    case SeriesSortOption.ratingLow:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.rating)]);
+    case SeriesSortOption.yearNewest:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.releaseYear, mode: drift.OrderingMode.desc)
+        ]);
+    case SeriesSortOption.yearOldest:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.releaseYear)]);
+  }
 
-    // Sort
-    result = List.from(result);
-    switch (filter.sortBy) {
-      case SeriesSortOption.titleAZ:
-        result.sort((a, b) => a.title.compareTo(b.title));
-      case SeriesSortOption.titleZA:
-        result.sort((a, b) => b.title.compareTo(a.title));
-      case SeriesSortOption.ratingHigh:
-        result.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
-      case SeriesSortOption.ratingLow:
-        result.sort((a, b) => (a.rating ?? 0).compareTo(b.rating ?? 0));
-      case SeriesSortOption.yearNewest:
-        result.sort((a, b) => (b.releaseYear ?? 0).compareTo(a.releaseYear ?? 0));
-      case SeriesSortOption.yearOldest:
-        result.sort((a, b) => (a.releaseYear ?? 0).compareTo(b.releaseYear ?? 0));
-    }
+  query = query..limit(filter.selectedCategoryId != null ? 1500 : 500);
 
-    return result;
-  });
+  return query.watch();
 });

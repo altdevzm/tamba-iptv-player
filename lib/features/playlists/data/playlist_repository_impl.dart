@@ -221,11 +221,21 @@ class PlaylistRepositoryImpl implements PlaylistRepository {
     }
   }
 
-  /// Classifies an M3U entry as `'movie'` when its URL clearly points to a VOD
-  /// movie file; everything else stays `'live'` so every item is directly playable.
+  static final _seriesEpisodePattern = RegExp(
+    r'\bS\d{1,2}\s*E\d{1,3}\b',
+    caseSensitive: false,
+  );
+
+  /// Classifies an M3U entry as `'series'`, `'movie'`, or `'live'` based on
+  /// standard IPTV URL structure (`/series/`, `/movie/`, VOD file extensions)
+  /// and episode naming (`S01 E01` / `S01E01`).
   static String _classifyM3uItem(ParsedChannel ch) {
     final lowerUrl = ch.streamUrl.toLowerCase();
     final pathOnly = lowerUrl.split('?').first;
+    if (pathOnly.contains('/series/') ||
+        _seriesEpisodePattern.hasMatch(ch.title)) {
+      return 'series';
+    }
     if (pathOnly.contains('/movie/') ||
         pathOnly.endsWith('.mp4') ||
         pathOnly.endsWith('.mkv') ||

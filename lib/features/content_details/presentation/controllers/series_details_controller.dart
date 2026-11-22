@@ -395,26 +395,28 @@ class SeriesDetailsNotifier extends StateNotifier<SeriesDetailsState> {
         state = state.copyWith(fetchEpisodesError: e.toString());
       }
       state = state.copyWith(isLoadingEpisodes: false);
-    } else if (playlist.type == 'm3u' || playlist.type == 'local') {
-      // For M3U playlists, query local DB for episodes that share the same
-      // title prefix as the series (ContentItemsTable has no seriesProviderId).
+    } else if (playlist.type.startsWith('m3u') || playlist.type == 'local') {
+      // For M3U playlists, query local DB with a bounded SQL LIKE query for
+      // episodes sharing the same base series title.
       state = state.copyWith(isLoadingEpisodes: true, fetchEpisodesError: null);
       try {
-        // Fetch all series-type items in this playlist
-        final allRows = await (db.select(db.contentItemsTable)
+        final rawTitle = state.series.title.trim();
+        final baseTitle = rawTitle
+            .replaceAll(RegExp(r'\s*S\d{1,2}\s*E\d{1,3}.*$', caseSensitive: false), '')
+            .trim();
+        final prefix = baseTitle.isNotEmpty ? baseTitle : rawTitle;
+
+        final episodeRows = await (db.select(db.contentItemsTable)
               ..where((t) =>
-                  t.playlistId.equals(playlistId) & t.type.equals('series')))
+                  t.playlistId.equals(playlistId) &
+                  t.type.equals('series') &
+                  t.title.like('$prefix%'))
+              ..limit(250))
             .get();
 
-        // Filter rows that look like episodes of this series by matching the
-        // series title prefix (case-insensitive) or exact providerId prefix
-        final seriesTitle = state.series.title.toLowerCase().trim();
-        final seriesId = state.series.providerId;
-        final episodeRows = allRows.where((r) {
-          final rTitle = r.title.toLowerCase().trim();
-          return rTitle.startsWith(seriesTitle) ||
-              r.providerId.startsWith(seriesId);
-        }).toList();
+        if (episodeRows.isEmpty) {
+          episodeRows.add(state.series);
+        }
 
         if (episodeRows.isNotEmpty) {
           final parsed = <String, List<Map<String, dynamic>>>{};

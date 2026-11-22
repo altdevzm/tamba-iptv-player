@@ -171,13 +171,30 @@ final liveTvNotifierProvider =
 // Data providers
 // ---------------------------------------------------------------------------
 
-/// Watches all live channels for the active playlist.
+/// Watches live channels for the active playlist with SQLite-level category,
+/// search, and row-limit pushdown so 100k+ channel playlists never OOM.
 final _liveChannelsProvider =
     StreamProvider.autoDispose<List<ContentItemsTableData>>((ref) {
   final playlistId = ref.watch(activePlaylistIdProvider);
   if (playlistId == null) return Stream.value([]);
   final db = ref.watch(databaseProvider);
-  return db.watchContentItems(playlistId, 'live');
+  final state = ref.watch(liveTvNotifierProvider);
+
+  var query = db.select(db.contentItemsTable)
+    ..where((t) => t.playlistId.equals(playlistId) & t.type.equals('live'));
+
+  if (state.selectedCategoryId != null) {
+    query = query
+      ..where((t) => t.categoryId.equals(state.selectedCategoryId!));
+  }
+
+  final searchTerm = state.searchQuery.trim();
+  if (searchTerm.isNotEmpty) {
+    query = query..where((t) => t.title.like('%$searchTerm%'));
+  }
+
+  query = query..limit(state.selectedCategoryId != null ? 2000 : 800);
+  return query.watch();
 });
 
 /// Watches categories of type 'live' for the active playlist.

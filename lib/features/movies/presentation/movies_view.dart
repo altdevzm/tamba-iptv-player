@@ -174,48 +174,54 @@ final filteredMoviesProvider =
       ..where((t) => t.categoryId.equals(filter.selectedCategoryId!));
   }
 
-  return query.watch().map((items) {
-    var result = items;
+  final searchTerm = filter.searchQuery.trim();
+  if (searchTerm.isNotEmpty) {
+    query = query..where((t) => t.title.like('%$searchTerm%'));
+  }
 
-    // Search filter
-    if (filter.searchQuery.isNotEmpty) {
-      final term = filter.searchQuery.toLowerCase();
-      result =
-          result.where((i) => i.title.toLowerCase().contains(term)).toList();
-    }
+  if (filter.filterYear != null) {
+    query = query..where((t) => t.releaseYear.equals(filter.filterYear!));
+  }
 
-    // Year filter
-    if (filter.filterYear != null) {
-      result = result.where((i) => i.releaseYear == filter.filterYear).toList();
-    }
+  if (filter.minRating != null) {
+    query = query
+      ..where((t) => t.rating.isBiggerOrEqualValue(filter.minRating!));
+  }
 
-    // Min rating filter
-    if (filter.minRating != null) {
-      result =
-          result.where((i) => (i.rating ?? 0) >= filter.minRating!).toList();
-    }
+  switch (filter.sortBy) {
+    case MovieSortOption.titleAZ:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.title)]);
+    case MovieSortOption.titleZA:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.title, mode: drift.OrderingMode.desc)
+        ]);
+    case MovieSortOption.ratingHigh:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.rating, mode: drift.OrderingMode.desc)
+        ]);
+    case MovieSortOption.ratingLow:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.rating)]);
+    case MovieSortOption.yearNewest:
+      query = query
+        ..orderBy([
+          (t) => drift.OrderingTerm(
+              expression: t.releaseYear, mode: drift.OrderingMode.desc)
+        ]);
+    case MovieSortOption.yearOldest:
+      query = query
+        ..orderBy([(t) => drift.OrderingTerm(expression: t.releaseYear)]);
+  }
 
-    // Sort
-    result = List.from(result);
-    switch (filter.sortBy) {
-      case MovieSortOption.titleAZ:
-        result.sort((a, b) => a.title.compareTo(b.title));
-      case MovieSortOption.titleZA:
-        result.sort((a, b) => b.title.compareTo(a.title));
-      case MovieSortOption.ratingHigh:
-        result.sort((a, b) => (b.rating ?? 0).compareTo(a.rating ?? 0));
-      case MovieSortOption.ratingLow:
-        result.sort((a, b) => (a.rating ?? 0).compareTo(b.rating ?? 0));
-      case MovieSortOption.yearNewest:
-        result
-            .sort((a, b) => (b.releaseYear ?? 0).compareTo(a.releaseYear ?? 0));
-      case MovieSortOption.yearOldest:
-        result
-            .sort((a, b) => (a.releaseYear ?? 0).compareTo(b.releaseYear ?? 0));
-    }
+  // Cap rows pulled into RAM so massive 200k+ movie playlists never OOM
+  query = query..limit(filter.selectedCategoryId != null ? 1500 : 500);
 
-    return result;
-  });
+  return query.watch();
 });
 
 // ---------------------------------------------------------------------------
